@@ -345,7 +345,7 @@ cat > "${ROOTFS_DIR}/tmp/hostapd-validate.sh" <<'EOF'
 #!/bin/sh
 set -eu
 
-hostapd -tt -f /dev/null -B -dd -P /run/hostapd.pid -c /etc/hostapd/hostapd.conf
+hostapd -tt -f /dev/null -B -dd -P /run/hostapd.pid /etc/hostapd/hostapd.conf
 
 if [ -f /run/hostapd.pid ]; then
   pid="$(cat /run/hostapd.pid)"

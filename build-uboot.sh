@@ -8,7 +8,8 @@ log_start "build-uboot"
 
 check_bins git make gzip sha256sum aarch64-linux-gnu-gcc
 
-UBOOT_REF="main"
+# Default to the latest known good Banana Pi R4 branch unless provided by the environment.
+: "${UBOOT_REF:=2024-04-bpi-r4}"
 UBOOT_SRC="${WORK_DIR}/u-boot"
 UBOOT_BUILD="${UBOOT_SRC}/build"
 

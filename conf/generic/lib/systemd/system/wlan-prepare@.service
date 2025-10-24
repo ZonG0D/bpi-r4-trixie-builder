@@ -1,0 +1,16 @@
+[Unit]
+Description=Prepare WLAN for AP bring-up
+Wants=systemd-udev-settle.service network-pre.target
+After=systemd-udev-settle.service network-pre.target
+BindsTo=sys-subsystem-net-devices-%i.device
+After=sys-subsystem-net-devices-%i.device
+Before=hostapd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill unblock all
+ExecStart=/usr/sbin/iw reg set @REGDOMAIN@
+ExecStart=/bin/ip link set %i up
+
+[Install]
+WantedBy=multi-user.target

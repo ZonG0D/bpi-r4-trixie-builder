@@ -94,12 +94,18 @@ def download(url: str, destination: Path):
     print(f"[OK] Downloaded {destination.name}")
 
 
+FIRMWARE_HEADERS = {
+    "User-Agent": "bpi-r4-trixie-builder",
+}
+
+
 def download_firmware():
     for relative, url in FIRMWARE_SOURCES.items():
         dest = FIRMWARE_DIR / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request(url, headers=FIRMWARE_HEADERS)
         try:
-            with urllib.request.urlopen(url) as response, tempfile.NamedTemporaryFile(delete=False) as tmp:
+            with urllib.request.urlopen(request) as response, tempfile.NamedTemporaryFile(delete=False) as tmp:
                 while True:
                     block = response.read(1024 * 1024)
                     if not block:

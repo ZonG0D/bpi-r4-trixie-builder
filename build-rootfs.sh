@@ -53,6 +53,14 @@ else
     CAN_MOUNT=0
 fi
 
+ensure_subid_mapping() {
+    local entry user="$1" file="$2"
+    entry="${user}:100000:65536"
+    if ! grep -q "^${user}:" "${file}" 2>/dev/null; then
+        echo "${entry}" >>"${file}"
+    fi
+}
+
 can_unshare_mount() {
     if ! command -v unshare >/dev/null 2>&1; then
         return 1
@@ -63,6 +71,11 @@ can_unshare_mount() {
     fi
     return 1
 }
+
+if [ "${HAVE_MMDEBSTRAP}" -eq 1 ] && [ "${CAN_MOUNT}" -eq 0 ]; then
+    ensure_subid_mapping root /etc/subuid
+    ensure_subid_mapping root /etc/subgid
+fi
 
 if can_unshare_mount; then
     CAN_UNSHARE_MOUNT=1
@@ -93,15 +106,6 @@ if [ "${HAVE_MMDEBSTRAP}" -eq 1 ] && [ "${CAN_MOUNT}" -eq 0 ]; then
     fi
     echo "[INFO] Using mmdebstrap under unshare. Container has no mount capability."
     check_bins mmdebstrap unshare newuidmap newgidmap
-    ensure_subid_mapping() {
-        local entry user="$1" file="$2"
-        entry="${user}:100000:65536"
-        if ! grep -q "^${user}:" "${file}" 2>/dev/null; then
-            echo "${entry}" >>"${file}"
-        fi
-    }
-    ensure_subid_mapping root /etc/subuid
-    ensure_subid_mapping root /etc/subgid
     MMDEBSTRAP_COMMON=(
         --mode=root
         --skip=check/qemu

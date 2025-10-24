@@ -118,6 +118,19 @@ aeonsemi/as21x1x_fw.bin
 
 ---
 
+### WI-FI CONFIGURATION
+
+- The build enables `hostapd` with `/etc/hostapd/hostapd-5g.conf`, a ready-to-use
+  Wi-Fi 7 (EHT) 5 GHz configuration bridged to `br-lan`. A 6 GHz template is
+  shipped at `/etc/hostapd/hostapd-6g.conf` for regions that permit it.
+- The regulatory domain is applied at boot by `wifi-regdom.service`, which
+  defaults to `US`. Override it by exporting `WIFI_REGDOMAIN=CC` when invoking
+  the build scripts, or by editing `/etc/default/wifi-regdom` on the device.
+- Run `/usr/local/sbin/wifi-health.sh` for a quick status report covering the
+  regulatory database, active PHY capabilities, `hostapd`, and nftables.
+
+---
+
 ### PROJECT LAYOUT
 
 ```

@@ -9,7 +9,7 @@ check_bins debootstrap curl tar gzip xz sha256sum rsync chroot mount umount "${Q
 ROOTFS_DIR="${WORK_DIR}/rootfs-${DISTRO}-${ARCH}"
 ROOTFS_TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
 BASE_PACKAGES="\
-  systemd systemd-sysv udev dbus locales openssh-server nftables xz-utils hostapd iw \
+  systemd systemd-sysv systemd-resolved udev dbus locales openssh-server nftables xz-utils hostapd iw \
   wireless-tools iproute2 iputils-ping net-tools curl ca-certificates rsync vim-tiny \
   procps less kmod ethtool iptables dnsmasq fake-hwclock systemd-timesyncd parted \
   gdisk cloud-guest-utils e2fsprogs wireless-regdb firmware-linux firmware-linux-nonfree \

@@ -54,6 +54,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+zcat "${BOOTLOADER_ARCHIVE}" | dd of="${LOOPDEV}" bs=512 conv=notrunc oflag=direct status=none
+
 parted -s "${LOOPDEV}" mklabel gpt
 parted -s "${LOOPDEV}" unit MiB mkpart loader1 0.5 2
 parted -s "${LOOPDEV}" unit MiB mkpart loader2 2 4
@@ -62,8 +64,6 @@ parted -s "${LOOPDEV}" unit MiB mkpart reserved 6 8
 parted -s "${LOOPDEV}" unit MiB mkpart boot 8 264
 parted -s "${LOOPDEV}" unit MiB mkpart root 264 100%
 parted -s "${LOOPDEV}" print
-
-zcat "${BOOTLOADER_ARCHIVE}" | dd of="${LOOPDEV}" bs=512 conv=notrunc oflag=direct status=none
 
 partprobe "${LOOPDEV}"
 

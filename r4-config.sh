@@ -13,9 +13,9 @@ MIRROR_MAIN="http://deb.debian.org/debian"
 MIRROR_SECURITY="http://security.debian.org/debian-security"
 MIRROR_UPDATES="http://deb.debian.org/debian"
 
-DEBIAN_SOURCES="deb ${MIRROR_MAIN} ${DISTRO} main contrib non-free non-free-firmware\n\
-deb ${MIRROR_SECURITY} ${DISTRO}-security main contrib non-free non-free-firmware\n\
-deb ${MIRROR_UPDATES} ${DISTRO}-updates main contrib non-free non-free-firmware"
+DEBIAN_SOURCES=$'deb ${MIRROR_MAIN} ${DISTRO} main contrib non-free non-free-firmware\n'
+DEBIAN_SOURCES+=$'deb ${MIRROR_SECURITY} ${DISTRO}-security main contrib non-free non-free-firmware\n'
+DEBIAN_SOURCES+=$'deb ${MIRROR_UPDATES} ${DISTRO}-updates main contrib non-free non-free-firmware'
 
 UBOOTCFG="/bananapi/bpi-r4/linux/uEnv.txt"
 QEMU_BIN="/usr/bin/qemu-aarch64-static"

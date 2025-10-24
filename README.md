@@ -1,37 +1,37 @@
-````markdown
 # [TOOL][BPI-R4][DEBIAN-TRIXIE] Banana Pi R4 Trixie Builder
 
-Minimal image builder for Banana Pi R4 (MT7988 / Filogic 880).  
-Produces a clean Debian Trixie (13) arm64 SD image with kernel 6.12 or newer.  
-Single-board focus. No multi-device logic. No excess glue.
+Minimal image builder for the Banana Pi R4 (MediaTek MT7988 / Filogic 880).
+Produces a clean Debian Trixie (13) arm64 SD image bundled with the latest
+vendor U-Boot and a Wi-Fi 7 capable kernel.
 
 ---
 
 ### FEATURES
 
-- Debian Trixie arm64 root filesystem  
-- Kernel 6.12 + Wi-Fi 7 (BPI-NIC-BE14 / MT7996)  
-- Choice between fetching binaries or compiling U-Boot + kernel locally  
-- Deterministic tarball and image hashes  
-- Works on Ubuntu 24.04 LTS or any recent Debian-based host  
-- Minimal POSIX shell + Python 3 toolchain
+- Debian Trixie arm64 root filesystem generated with `debootstrap`
+- Vendor U-Boot SDMMC image and mainline-derived kernel bundle fetched
+automatically
+- Optional local firmware cache that is injected into the final image
+- Deterministic tarball and image hashing for reproducible artifacts
+- Minimal Bash + Python 3 toolchain suitable for CI usage
 
 ---
 
-### HOST SETUP
+### HOST REQUIREMENTS
 
-Install the base dependencies:
+The build scripts must be executed as `root` (or via `sudo`) because they rely
+on `chroot`, `losetup`, and bind mounts.
 
-```bash
-sudo ./bootstrap.sh
-````
-
-For full local compilation:
+Install the required packages on a Debian/Ubuntu host:
 
 ```bash
-sudo apt install gcc-aarch64-linux-gnu bc flex bison \
-  libssl-dev libncurses5-dev
+sudo apt update
+sudo apt install \
+  debootstrap qemu-user-static curl tar gzip xz-utils rsync \
+  python3 dosfstools e2fsprogs parted util-linux
 ```
+
+The tool only depends on the system Python 3 runtime and standard library.
 
 ---
 
@@ -42,67 +42,66 @@ Clone and build:
 ```bash
 git clone https://github.com/ZonG0D/bpi-r4-trixie-builder.git
 cd bpi-r4-trixie-builder
-make fetch   # default: use prebuilt kernel/uboot assets
-             # downloads artifacts listed in assets-manifest.json
+sudo make           # equivalent to: make image
 ```
 
-or build everything from source:
+The Makefile targets are:
 
 ```bash
-make local   # compile kernel + uboot locally, firmware via kernel.org
+make fetch   # download U-Boot, kernel bundle, and firmware blobs
+make rootfs  # create the Debian Trixie root filesystem tarball
+make image   # assemble the bootable SDMMC image (default target)
+make clean   # remove out/, work/, and firmware/ directories
 ```
 
-cleanup:
-
-```bash
-make clean
-```
-
-Artifacts are placed in `out/`:
+Artifacts are written to `out/`:
 
 ```
+bpi-r4_sdmmc.img.gz           # vendor U-Boot base image
+bpi-r4_*main*.tar.gz           # kernel bundle downloaded from GitHub
+trixie_arm64.tar.gz            # generated rootfs tarball
 bpi-r4_trixie_6.12_sdmmc.img.gz
-bpi-r4_trixie_6.12_sdmmc.img.gz.sha256
-trixie_arm64.tar.gz
-logs/
+*.sha256                       # checksums for every artifact
 ```
 
 ---
 
-### FLASHING IMAGE
+### FLASHING THE IMAGE
 
 ```bash
 gunzip -c out/bpi-r4_trixie_6.12_sdmmc.img.gz | \
-sudo dd of=/dev/sdX bs=1M status=progress conv=fsync
+  sudo dd of=/dev/sdX bs=1M status=progress conv=fsync
 ```
 
-Replace `/dev/sdX` with the correct SD device.
-All data on that drive will be destroyed.
+Replace `/dev/sdX` with the correct SD card device. All data on the target
+will be destroyed.
 
 ---
 
 ### FIRST BOOT
 
-Serial console 115200 8N1 or LAN (DHCP).
-Credentials:
+- Serial console: 115200 8N1, or LAN via DHCP
+- Hostname: `bpi-r4`
+- Credentials:
 
 ```
 login: root
-pass : zong0d
+pass : bananapi
 ```
 
-After login:
+Change the password immediately after logging in:
 
-```
+```bash
 passwd
 ```
 
-If Wi-Fi 7 fails to load:
+If Wi-Fi fails to load, confirm the firmware is present and check `dmesg` for
+errors:
 
 ```bash
 ls /lib/firmware/mediatek/
 lsmod | grep mt76
-dmesg | grep mediatek
+dmesg | grep -iE 'mt79|wifi'
 ```
 
 Expected firmware set:
@@ -119,43 +118,33 @@ aeonsemi/as21x1x_fw.bin
 
 ---
 
-### TREE LAYOUT
+### PROJECT LAYOUT
 
 ```
-r4-config.sh      – Board constants and US Debian mirrors
-bootstrap.sh      – Host dependency validator / installer
-build-rootfs.sh   – Creates Debian Trixie arm64 root filesystem
-build-kernel.sh   – Optional kernel (6.12+) build
-build-uboot.sh    – Optional U-Boot build
-build-image.sh    – Assembles bootable SDMMC image
-fetch-assets.py   – Fetches firmware / verified binaries
-assets-manifest.json – Release + firmware checksum manifest
-Makefile          – Entry: make fetch | make local | make clean
-conf/             – Network + service templates
-firmware/         – Optional local cache
-out/              – Final artifacts and checksums
+Makefile         – `make fetch`, `make rootfs`, `make image`, `make clean`
+build-rootfs.sh  – Generates the Debian root filesystem tarball
+build-image.sh   – Assembles the final SDMMC image from downloaded assets
+fetch-assets.py  – Downloads vendor U-Boot, kernel bundle, and firmware
+r4-config.sh     – Shared configuration and helper functions
 ```
 
 ---
 
 ### NOTES
 
-* Enforces `/usr/bin/qemu-aarch64-static` for chroot operations
-* Uses US Debian mirrors (`deb.debian.org`, `security.debian.org`)
-* Fully deterministic build output
-* Only critical vendor blobs included
-* Compact code base for debug and CI integration
+- `qemu-aarch64-static` is copied into the chroot for arm64 package
+  configuration
+- Debian mirrors default to `deb.debian.org` and `security.debian.org`
+- Output directories (`out/`, `work/`, `firmware/`) are created automatically
+- The build is deterministic when the upstream artifacts remain unchanged
 
 ---
 
 ### LICENSE
 
-Scripts under MIT.
-Kernel / firmware retain vendor licenses.
+Scripts are released under the MIT license. Kernel and firmware binaries retain
+their original vendor licenses.
 
 ---
 
 **For developers building clean, reproducible R4 images.**
-
-```
-```

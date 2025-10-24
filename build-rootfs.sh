@@ -42,20 +42,25 @@ prepare_mountpoints() {
 
 mount_chroot() {
   prepare_mountpoints
+
   mountpoint -q "${ROOTFS_DIR}/proc" || mount -t proc proc "${ROOTFS_DIR}/proc"
   mountpoint -q "${ROOTFS_DIR}/sys" || mount -t sysfs sys "${ROOTFS_DIR}/sys"
-  mountpoint -q "${ROOTFS_DIR}/dev" || mount --rbind /dev "${ROOTFS_DIR}/dev"
-  mountpoint -q "${ROOTFS_DIR}/dev/pts" || mount --bind /dev/pts "${ROOTFS_DIR}/dev/pts"
-  mountpoint -q "${ROOTFS_DIR}/run" || mount -t tmpfs tmpfs "${ROOTFS_DIR}/run"
+  mountpoint -q "${ROOTFS_DIR}/dev" || mount --bind /dev "${ROOTFS_DIR}/dev"
+  if ! mountpoint -q "${ROOTFS_DIR}/dev/pts"; then
+    mount -t devpts -o gid=5,mode=620,ptmxmode=000 devpts "${ROOTFS_DIR}/dev/pts"
+  fi
+  mountpoint -q "${ROOTFS_DIR}/run" || mount --bind /run "${ROOTFS_DIR}/run"
+
+  ln -sf pts/ptmx "${ROOTFS_DIR}/dev/ptmx"
 }
 
 umount_chroot() {
   set +e
-  umount -l "${ROOTFS_DIR}/run" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/dev/pts" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/dev" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/proc" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/sys" 2>/dev/null
+  umount -R "${ROOTFS_DIR}/run" 2>/dev/null
+  umount "${ROOTFS_DIR}/dev/pts" 2>/dev/null
+  umount "${ROOTFS_DIR}/dev" 2>/dev/null
+  umount "${ROOTFS_DIR}/sys" 2>/dev/null
+  umount "${ROOTFS_DIR}/proc" 2>/dev/null
   set -e
 }
 
@@ -77,8 +82,8 @@ DEBIAN_FRONTEND=noninteractive debootstrap \
   --arch="${ARCH}" --variant=minbase --foreign --merged-usr \
   "${DISTRO}" "${ROOTFS_DIR}" "${DEBOOTSTRAP_MIRROR}"
 
-install -D "${QEMU_BIN}" "${ROOTFS_DIR}${QEMU_BIN}"
-install -D /etc/resolv.conf "${ROOTFS_DIR}/etc/resolv.conf"
+install -D -m0755 "${QEMU_BIN}" "${ROOTFS_DIR}${QEMU_BIN}"
+printf 'nameserver 1.1.1.1\n' > "${ROOTFS_DIR}/etc/resolv.conf"
 if [ ! -f "${ROOTFS_DIR}/usr/share/keyrings/debian-archive-keyring.gpg" ] && \
    [ -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
   install -D /usr/share/keyrings/debian-archive-keyring.gpg \
@@ -204,22 +209,22 @@ EOF
 
 install -D -m0644 "${SCRIPT_DIR}/conf/generic/etc/hostapd/hostapd.conf" \
   "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
-sed -i \
-  -e "s/@COUNTRY@/${BUILD_REGDOMAIN}/" \
-  -e "s/@WIFI_IFACE@/${WIFI_IFACE}/" \
+sed -ri \
+  "s/^country=.*/country=${BUILD_REGDOMAIN}/" \
+  "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
+sed -ri \
+  "s/^interface=.*/interface=${WIFI_IFACE}/" \
   "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
 
-cat > "${ROOTFS_DIR}/etc/systemd/network/zz-99-${WIFI_IFACE}.network" <<'EOF'
+cat > "${ROOTFS_DIR}/etc/systemd/network/zz-99-${WIFI_IFACE}.network" <<EOF
 [Match]
-Name=@WIFI_IFACE@
+Name=${WIFI_IFACE}
 
 [Network]
-ConfigureWithoutCarrier=no
-LinkLocalAddressing=no
 DHCP=no
+LinkLocalAddressing=no
 IPv6AcceptRA=no
 EOF
-sed -i "s/@WIFI_IFACE@/${WIFI_IFACE}/" "${ROOTFS_DIR}/etc/systemd/network/zz-99-${WIFI_IFACE}.network"
 
 cat > "${ROOTFS_DIR}/etc/default/hostapd" <<'EOF'
 DAEMON_CONF="/etc/hostapd/hostapd.conf"
@@ -264,12 +269,11 @@ table ip nat {
 }
 EOF
 
-install -D -m0644 "${SCRIPT_DIR}/conf/generic/lib/systemd/system/wlan-prepare.service" \
-  "${ROOTFS_DIR}/lib/systemd/system/wlan-prepare.service"
-sed -i \
-  -e "s/@COUNTRY@/${BUILD_REGDOMAIN}/" \
-  -e "s/@WIFI_IFACE@/${WIFI_IFACE}/" \
-  "${ROOTFS_DIR}/lib/systemd/system/wlan-prepare.service"
+install -D -m0644 "${SCRIPT_DIR}/conf/generic/lib/systemd/system/wlan-prepare@.service" \
+  "${ROOTFS_DIR}/lib/systemd/system/wlan-prepare@.service"
+sed -ri \
+  "s/@REGDOMAIN@/${BUILD_REGDOMAIN}/" \
+  "${ROOTFS_DIR}/lib/systemd/system/wlan-prepare@.service"
 
 install -d -m0755 "${ROOTFS_DIR}/etc/systemd/system/hostapd.service.d"
 cat > "${ROOTFS_DIR}/etc/systemd/system/hostapd.service.d/override.conf" <<'EOF'
@@ -341,22 +345,6 @@ EOF
 chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh"
 sed -i "s/@WIFI_IFACE@/${WIFI_IFACE}/" "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh"
 
-cat > "${ROOTFS_DIR}/tmp/hostapd-validate.sh" <<'EOF'
-#!/bin/sh
-set -eu
-
-hostapd -tt -f /dev/null -B -dd -P /run/hostapd.pid /etc/hostapd/hostapd.conf
-
-if [ -f /run/hostapd.pid ]; then
-  pid="$(cat /run/hostapd.pid)"
-  kill "$pid" || true
-  rm -f /run/hostapd.pid
-fi
-EOF
-chmod +x "${ROOTFS_DIR}/tmp/hostapd-validate.sh"
-chroot_qemu "/tmp/hostapd-validate.sh"
-rm -f "${ROOTFS_DIR}/tmp/hostapd-validate.sh"
-
 cat > "${ROOTFS_DIR}/usr/local/sbin/firstboot-grow.sh" <<'EOF'
 #!/bin/sh
 set -eu
@@ -411,11 +399,13 @@ for unit in \
   hostapd.service \
   dnsmasq.service \
   systemd-timesyncd.service \
-  firstboot-grow.service \
-  wlan-prepare.service
+  firstboot-grow.service
 do
   SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable "${unit}" || true
 done
+
+SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable \
+  "wlan-prepare@${WIFI_IFACE}.service" || true
 
 if [ -L "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service" ] && \
    [ "$(readlink "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service")" = "/dev/null" ]; then
@@ -459,7 +449,6 @@ rm -rf "${ROOTFS_DIR}/var/lib/apt/lists"/*
 rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 
 umount_chroot
-trap - EXIT
 
 rm -f "${ROOTFS_DIR}${QEMU_BIN}"
 

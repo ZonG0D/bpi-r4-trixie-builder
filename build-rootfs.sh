@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-. "$(dirname "$0")/r4-config.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "${SCRIPT_DIR}/r4-config.sh"
 
 require_root
 check_bins debootstrap curl tar gzip xz sha256sum rsync chroot mount umount "${QEMU_BIN}"
@@ -10,11 +11,14 @@ ROOTFS_DIR="${WORK_DIR}/rootfs-${DISTRO}-${ARCH}"
 ROOTFS_TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
 BASE_PACKAGES="\
   systemd systemd-sysv systemd-resolved udev dbus locales openssh-server nftables xz-utils hostapd iw \
-  wireless-tools iproute2 iputils-ping net-tools curl ca-certificates rsync vim-tiny \
+  rfkill wireless-tools iproute2 iputils-ping net-tools curl ca-certificates rsync vim-tiny \
   procps less kmod ethtool iptables dnsmasq fake-hwclock systemd-timesyncd parted \
   gdisk cloud-guest-utils e2fsprogs wireless-regdb firmware-linux firmware-linux-nonfree \
   firmware-mediatek usr-is-merged"
-REGDOMAIN="${WIFI_REGDOMAIN}"
+
+: "${BUILD_REGDOMAIN:=${WIFI_REGDOMAIN:-}}"
+: "${BUILD_REGDOMAIN:?set BUILD_REGDOMAIN, example US}"
+WIFI_IFACE="${WIFI_IFACE:-wlp1s0}"
 
 chroot_qemu() {
   chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c "$*"
@@ -118,6 +122,17 @@ chmod +x "${SETUP_SCRIPT}"
 chroot_qemu "/tmp/rootfs-setup.sh"
 rm -f "${SETUP_SCRIPT}"
 
+for regdb in /lib/firmware/regulatory.db /lib/firmware/regulatory.db.p7s; do
+  if [ ! -s "${ROOTFS_DIR}${regdb}" ]; then
+    fail "missing ${regdb}"
+  fi
+done
+
+if [ ! -d "${ROOTFS_DIR}/lib/firmware/mediatek" ] || \
+   ! find "${ROOTFS_DIR}/lib/firmware/mediatek" -maxdepth 2 -type f -name 'mt7996*.bin' -print -quit >/dev/null 2>&1; then
+  fail "mt7996 firmware absent"
+fi
+
 if [ -f "${ROOTFS_DIR}/etc/ssh/sshd_config" ]; then
   sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "${ROOTFS_DIR}/etc/ssh/sshd_config" || true
 fi
@@ -187,46 +202,27 @@ dhcp-option=option:router,192.168.153.1
 dhcp-option=option:dns-server,192.168.153.1
 EOF
 
-cat > "${ROOTFS_DIR}/etc/hostapd/hostapd-5g.conf" <<EOF
-country_code=${REGDOMAIN}
-ieee80211d=1
-interface=wlp1s0
-bridge=br-lan
-ssid=BPI-R4-5G
-hw_mode=a
-channel=149
-ieee80211ax=1
-ieee80211be=1
-he_oper_chwidth=1
-vht_oper_chwidth=1
-eht_oper_chwidth=2
-wpa=2
-wpa_key_mgmt=SAE
-rsn_pairwise=CCMP
-sae_require_mfp=1
-wpa_passphrase=ChangeMe-Strong-12
-EOF
+install -D -m0644 "${SCRIPT_DIR}/conf/generic/etc/hostapd/hostapd.conf" \
+  "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
+sed -i \
+  -e "s/@COUNTRY@/${BUILD_REGDOMAIN}/" \
+  -e "s/@WIFI_IFACE@/${WIFI_IFACE}/" \
+  "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
 
-cat > "${ROOTFS_DIR}/etc/hostapd/hostapd-6g.conf" <<EOF
-country_code=${REGDOMAIN}
-ieee80211d=1
-interface=wlan1
-bridge=br-lan
-ssid=BPI-R4-6G
-hw_mode=a
-channel=5
-ieee80211ax=1
-ieee80211be=1
-eht_oper_chwidth=3
-wpa=2
-wpa_key_mgmt=SAE
-rsn_pairwise=CCMP
-sae_require_mfp=1
-wpa_passphrase=ChangeMe-Strong-12
+cat > "${ROOTFS_DIR}/etc/systemd/network/zz-99-${WIFI_IFACE}.network" <<'EOF'
+[Match]
+Name=@WIFI_IFACE@
+
+[Network]
+ConfigureWithoutCarrier=no
+LinkLocalAddressing=no
+DHCP=no
+IPv6AcceptRA=no
 EOF
+sed -i "s/@WIFI_IFACE@/${WIFI_IFACE}/" "${ROOTFS_DIR}/etc/systemd/network/zz-99-${WIFI_IFACE}.network"
 
 cat > "${ROOTFS_DIR}/etc/default/hostapd" <<'EOF'
-DAEMON_CONF="/etc/hostapd/hostapd-5g.conf"
+DAEMON_CONF="/etc/hostapd/hostapd.conf"
 RUN_DAEMON="yes"
 EOF
 
@@ -268,47 +264,18 @@ table ip nat {
 }
 EOF
 
-cat > "${ROOTFS_DIR}/etc/default/wifi-regdom" <<EOF
-REGDOMAIN=${REGDOMAIN}
-EOF
+install -D -m0644 "${SCRIPT_DIR}/conf/generic/lib/systemd/system/wlan-prepare.service" \
+  "${ROOTFS_DIR}/lib/systemd/system/wlan-prepare.service"
+sed -i \
+  -e "s/@COUNTRY@/${BUILD_REGDOMAIN}/" \
+  -e "s/@WIFI_IFACE@/${WIFI_IFACE}/" \
+  "${ROOTFS_DIR}/lib/systemd/system/wlan-prepare.service"
 
-if [ -e "${ROOTFS_DIR}/lib/firmware/regulatory.db-debian" ]; then
-  ln -sf regulatory.db-debian "${ROOTFS_DIR}/lib/firmware/regulatory.db"
-fi
-
-cat > "${ROOTFS_DIR}/usr/local/sbin/wifi-set-regdom.sh" <<EOF
-#!/bin/sh
-set -eu
-
-REGDOMAIN_DEFAULT="${REGDOMAIN}"
-if [ -r /etc/default/wifi-regdom ]; then
-  # shellcheck disable=SC1091
-  . /etc/default/wifi-regdom
-  if [ -n "\${REGDOMAIN:-}" ]; then
-    REGDOMAIN_DEFAULT="\${REGDOMAIN}"
-  fi
-fi
-
-if [ -z "\${REGDOMAIN_DEFAULT}" ]; then
-  exit 0
-fi
-
-exec /sbin/iw reg set "\${REGDOMAIN_DEFAULT}"
-EOF
-chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/wifi-set-regdom.sh"
-
-cat > "${ROOTFS_DIR}/etc/systemd/system/wifi-regdom.service" <<'EOF'
-[Unit]
-Description=Set Wi-Fi regulatory domain
-After=systemd-udevd.service
-Wants=systemd-udevd.service
-
+install -d -m0755 "${ROOTFS_DIR}/etc/systemd/system/hostapd.service.d"
+cat > "${ROOTFS_DIR}/etc/systemd/system/hostapd.service.d/override.conf" <<'EOF'
 [Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/wifi-set-regdom.sh
-
-[Install]
-WantedBy=multi-user.target
+Restart=on-failure
+RestartSec=2
 EOF
 
 cat > "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh" <<'EOF'
@@ -339,7 +306,7 @@ fi
 
 print_section "Primary radio"
 if command -v iw >/dev/null 2>&1; then
-  iw dev wlp1s0 info || true
+  iw dev @WIFI_IFACE@ info || true
 else
   echo "iw not installed"
 fi
@@ -372,6 +339,23 @@ print_section "nftables ruleset"
 nft list ruleset || true
 EOF
 chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh"
+sed -i "s/@WIFI_IFACE@/${WIFI_IFACE}/" "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh"
+
+cat > "${ROOTFS_DIR}/tmp/hostapd-validate.sh" <<'EOF'
+#!/bin/sh
+set -eu
+
+hostapd -tt -f /dev/null -B -dd -P /run/hostapd.pid -c /etc/hostapd/hostapd.conf
+
+if [ -f /run/hostapd.pid ]; then
+  pid="$(cat /run/hostapd.pid)"
+  kill "$pid" || true
+  rm -f /run/hostapd.pid
+fi
+EOF
+chmod +x "${ROOTFS_DIR}/tmp/hostapd-validate.sh"
+chroot_qemu "/tmp/hostapd-validate.sh"
+rm -f "${ROOTFS_DIR}/tmp/hostapd-validate.sh"
 
 cat > "${ROOTFS_DIR}/usr/local/sbin/firstboot-grow.sh" <<'EOF'
 #!/bin/sh
@@ -417,6 +401,9 @@ mount_chroot
 SYSTEMCTL_CMD=(systemctl --root="${ROOTFS_DIR}" --no-ask-password)
 SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" preset-all || true
 
+SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" mask \
+  wpa_supplicant.service wpa_supplicant@.service || true
+
 for unit in \
   systemd-networkd.service \
   systemd-resolved.service \
@@ -425,9 +412,9 @@ for unit in \
   dnsmasq.service \
   systemd-timesyncd.service \
   firstboot-grow.service \
-  wifi-regdom.service
+  wlan-prepare.service
 do
-  SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable "${unit}"
+  SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable "${unit}" || true
 done
 
 if [ -L "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service" ] && \

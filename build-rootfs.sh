@@ -251,7 +251,22 @@ ExecStart=/usr/local/sbin/firstboot-grow.sh
 WantedBy=multi-user.target
 EOF
 
-chroot_qemu 'systemctl enable systemd-networkd systemd-resolved nftables dnsmasq systemd-timesyncd fake-hwclock firstboot-grow.service'
+# Enable services directly from the host because the chroot does not have a
+# running systemd instance. Using --root performs the enablement offline while
+# still respecting the units' Install metadata.
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl is required to enable services inside the rootfs" >&2
+  exit 1
+fi
+
+systemctl --root="${ROOTFS_DIR}" enable \
+  systemd-networkd \
+  systemd-resolved \
+  nftables \
+  dnsmasq \
+  systemd-timesyncd \
+  fake-hwclock \
+  firstboot-grow.service
 chroot_qemu 'rm -f /etc/resolv.conf && ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf'
 
 mkdir -p "${ROOTFS_DIR}/lib/firmware"

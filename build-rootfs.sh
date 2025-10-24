@@ -37,11 +37,11 @@ prepare_mountpoints() {
 
 mount_chroot() {
   prepare_mountpoints
-  mount -t proc proc "${ROOTFS_DIR}/proc"
-  mount -t sysfs sys "${ROOTFS_DIR}/sys"
-  mount --bind /dev "${ROOTFS_DIR}/dev"
-  mount --bind /dev/pts "${ROOTFS_DIR}/dev/pts"
-  mount -t tmpfs tmpfs "${ROOTFS_DIR}/run"
+  mountpoint -q "${ROOTFS_DIR}/proc" || mount -t proc proc "${ROOTFS_DIR}/proc"
+  mountpoint -q "${ROOTFS_DIR}/sys" || mount -t sysfs sys "${ROOTFS_DIR}/sys"
+  mountpoint -q "${ROOTFS_DIR}/dev" || mount --rbind /dev "${ROOTFS_DIR}/dev"
+  mountpoint -q "${ROOTFS_DIR}/dev/pts" || mount --bind /dev/pts "${ROOTFS_DIR}/dev/pts"
+  mountpoint -q "${ROOTFS_DIR}/run" || mount -t tmpfs tmpfs "${ROOTFS_DIR}/run"
 }
 
 umount_chroot() {
@@ -101,6 +101,9 @@ cat > "${SETUP_SCRIPT}" <<EOF
 #!/bin/sh
 set -eu
 export DEBIAN_FRONTEND=noninteractive
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export SYSTEMD_OFFLINE=1
 apt-get -o Dpkg::Use-Pty=0 update
 apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y ${BASE_PACKAGES}
 sed -i "s/^# \?en_US.UTF-8/en_US.UTF-8/" /etc/locale.gen || true
@@ -259,6 +262,7 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
+mount_chroot
 SYSTEMCTL_CMD=(systemctl --root="${ROOTFS_DIR}" --no-ask-password)
 SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" preset-all || true
 
@@ -320,8 +324,8 @@ trap - EXIT
 rm -f "${ROOTFS_DIR}${QEMU_BIN}"
 
 echo "[INFO] Packing ${ROOTFS_TAR}"
-GZIP=-n tar --sort=name --mtime='@0' --numeric-owner --owner=0 --group=0 \
-  -C "${ROOTFS_DIR}" -czf "${ROOTFS_TAR}" .
+tar --sort=name --mtime='@0' --numeric-owner --owner=0 --group=0 \
+  -C "${ROOTFS_DIR}" -cf - . | gzip -n > "${ROOTFS_TAR}"
 sha256sum "${ROOTFS_TAR}" > "${ROOTFS_TAR}.sha256"
 
 echo "[OK] Root filesystem tarball ready: ${ROOTFS_TAR}"

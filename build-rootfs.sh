@@ -259,14 +259,26 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
-systemctl --root="${ROOTFS_DIR}" enable \
-  systemd-networkd \
-  systemd-resolved \
-  nftables \
-  dnsmasq \
-  systemd-timesyncd \
-  fake-hwclock \
+SYSTEMCTL_CMD=(systemctl --root="${ROOTFS_DIR}" --no-ask-password)
+SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" preset-all || true
+
+for unit in \
+  systemd-networkd.service \
+  systemd-resolved.service \
+  nftables.service \
+  dnsmasq.service \
+  systemd-timesyncd.service \
   firstboot-grow.service
+do
+  SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable "${unit}"
+done
+
+if [ -L "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service" ] && \
+   [ "$(readlink "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service")" = "/dev/null" ]; then
+  echo "[INFO] fake-hwclock.service is masked; skipping enable"
+else
+  echo "[INFO] Leaving fake-hwclock.service at its packaged default state"
+fi
 chroot_qemu 'rm -f /etc/resolv.conf && ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf'
 
 mkdir -p "${ROOTFS_DIR}/lib/firmware"

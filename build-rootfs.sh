@@ -4,65 +4,117 @@ set -euo pipefail
 . "$(dirname "$0")/r4-config.sh"
 
 require_root
-check_bins debootstrap curl xz gzip tar sha256sum "${QEMU_BIN}"
+check_bins debootstrap curl tar gzip xz sha256sum rsync "${QEMU_BIN}"
 
-ROOT="${WORK_DIR}/rootfs-${DISTRO}-${ARCH}"
-TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
-mkdir -p "${ROOT}" "${OUT_DIR}" "${WORK_DIR}"
-rm -rf "${ROOT:?}"/*
+ROOTFS_DIR="${WORK_DIR}/rootfs-${DISTRO}-${ARCH}"
+ROOTFS_TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
+
+chroot_qemu() {
+  chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/bash -lc "$*"
+}
+
+prepare_mountpoints() {
+  mkdir -p "${ROOTFS_DIR}/proc" \
+           "${ROOTFS_DIR}/sys" \
+           "${ROOTFS_DIR}/dev" \
+           "${ROOTFS_DIR}/dev/pts" \
+           "${ROOTFS_DIR}/run"
+}
+
+mount_chroot() {
+  prepare_mountpoints
+  mount -t proc proc "${ROOTFS_DIR}/proc"
+  mount -t sysfs sys "${ROOTFS_DIR}/sys"
+  mount --bind /dev "${ROOTFS_DIR}/dev"
+  mount --bind /dev/pts "${ROOTFS_DIR}/dev/pts"
+  mount --bind /run "${ROOTFS_DIR}/run" || true
+}
+
+umount_chroot() {
+  set +e
+  umount -l "${ROOTFS_DIR}/dev/pts" 2>/dev/null
+  umount -l "${ROOTFS_DIR}/dev" 2>/dev/null
+  umount -l "${ROOTFS_DIR}/proc" 2>/dev/null
+  umount -l "${ROOTFS_DIR}/sys" 2>/dev/null
+  umount -l "${ROOTFS_DIR}/run" 2>/dev/null
+  set -e
+}
+
+cleanup() {
+  umount_chroot
+  rm -f "${ROOTFS_DIR}${QEMU_BIN}"
+}
+
+trap cleanup EXIT
+
+mkdir -p "${OUT_DIR}" "${WORK_DIR}" "${ROOTFS_DIR}"
+umount_chroot
+rm -rf "${ROOTFS_DIR:?}"/*
 
 DEBOOTSTRAP_MIRROR="http://deb.debian.org/debian"
 
 echo "[INFO] Running debootstrap (stage 1)"
 DEBIAN_FRONTEND=noninteractive debootstrap \
-  --arch="${ARCH}" --foreign "${DISTRO}" "${ROOT}" "${DEBOOTSTRAP_MIRROR}"
+  --arch="${ARCH}" --variant=minbase --foreign \
+  "${DISTRO}" "${ROOTFS_DIR}" "${DEBOOTSTRAP_MIRROR}"
 
-install -D "${QEMU_BIN}" "${ROOT}${QEMU_BIN}"
-install -D /etc/resolv.conf "${ROOT}/etc/resolv.conf"
-if [ ! -f "${ROOT}/usr/share/keyrings/debian-archive-keyring.gpg" ] && [ -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
-  install -D /usr/share/keyrings/debian-archive-keyring.gpg "${ROOT}/usr/share/keyrings/debian-archive-keyring.gpg"
+install -D "${QEMU_BIN}" "${ROOTFS_DIR}${QEMU_BIN}"
+install -D /etc/resolv.conf "${ROOTFS_DIR}/etc/resolv.conf"
+if [ ! -f "${ROOTFS_DIR}/usr/share/keyrings/debian-archive-keyring.gpg" ] && \
+   [ -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
+  install -D /usr/share/keyrings/debian-archive-keyring.gpg \
+    "${ROOTFS_DIR}/usr/share/keyrings/debian-archive-keyring.gpg"
 fi
-
-CHROOT_DIR="${ROOT}"
-trap 'CHROOT_DIR="${ROOT}"; bind_mounts off; rm -f "${ROOT}${QEMU_BIN}"' EXIT
-bind_mounts on
 
 echo "[INFO] Running debootstrap (stage 2)"
-chroot_qemu "/debootstrap/debootstrap --second-stage"
+mount_chroot
+chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c \
+  "/debootstrap/debootstrap --second-stage"
 
-printf '%s\n' "${DEBIAN_SOURCES}" > "${ROOT}/etc/apt/sources.list"
+cat > "${ROOTFS_DIR}/usr/sbin/policy-rc.d" <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+chmod +x "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 
-chroot_qemu "DEBIAN_FRONTEND=noninteractive apt-get update"
-if [ ! -f "${ROOT}/usr/share/keyrings/debian-archive-keyring.gpg" ]; then
-  chroot_qemu "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends debian-archive-keyring"
+printf '%s\n' "${DEBIAN_SOURCES}" > "${ROOTFS_DIR}/etc/apt/sources.list"
+
+chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get update'
+if [ ! -f "${ROOTFS_DIR}/usr/share/keyrings/debian-archive-keyring.gpg" ]; then
+  chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install debian-archive-keyring'
 fi
 
-chroot_qemu "DEBIAN_FRONTEND=noninteractive apt-get update"
-chroot_qemu "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends locales openssh-server nftables xz-utils hostapd iw ca-certificates curl"
+chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get update'
+chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install locales'
+chroot_qemu 'locale-gen en_US.UTF-8 || true'
+chroot_qemu 'update-locale LANG=en_US.UTF-8'
+chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install \
+  openssh-server iproute2 nftables xz-utils hostapd iw ca-certificates curl'
 
-if [ -f "${ROOT}/etc/ssh/sshd_config" ]; then
-  sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "${ROOT}/etc/ssh/sshd_config"
-  if ! grep -q '^PermitRootLogin' "${ROOT}/etc/ssh/sshd_config"; then
-    echo 'PermitRootLogin yes' >> "${ROOT}/etc/ssh/sshd_config"
-  fi
+if [ -f "${ROOTFS_DIR}/etc/ssh/sshd_config" ]; then
+  sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "${ROOTFS_DIR}/etc/ssh/sshd_config" || true
 fi
-chroot_qemu "echo root:bananapi | chpasswd"
+chroot_qemu 'echo root:bananapi | chpasswd'
 
-chroot_qemu "DEBIAN_FRONTEND=noninteractive locale-gen en_US.UTF-8"
-cat > "${ROOT}/etc/default/locale" <<'LOCALE'
-LANG=en_US.UTF-8
-LC_ALL=en_US.UTF-8
-LOCALE
+mkdir -p "${ROOTFS_DIR}/lib/firmware"
 
-mkdir -p "${ROOT}/lib/firmware"
-chroot_qemu "DEBIAN_FRONTEND=noninteractive apt-get clean"
-rm -rf "${ROOT}/var/lib/apt/lists"/*
+if [ -d "${FIRMWARE_DIR}" ] && \
+   find "${FIRMWARE_DIR}" -mindepth 1 -print -quit >/dev/null 2>&1; then
+  rsync -a "${FIRMWARE_DIR}/" "${ROOTFS_DIR}/lib/firmware/"
+fi
 
-bind_mounts off
+chroot_qemu 'apt-get clean'
+rm -rf "${ROOTFS_DIR}/var/lib/apt/lists"/*
+rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
+
+umount_chroot
 trap - EXIT
-rm -f "${ROOT}${QEMU_BIN}"
 
-GZIP=-n tar --sort=name --mtime='@0' --numeric-owner --owner=0 --group=0 -C "${ROOT}" -czf "${TAR}" .
-sha256sum "${TAR}" > "${TAR}.sha256"
+rm -f "${ROOTFS_DIR}${QEMU_BIN}"
 
-echo "[OK] Root filesystem tarball ready: ${TAR}"
+echo "[INFO] Packing ${ROOTFS_TAR}"
+GZIP=-n tar --sort=name --mtime='@0' --numeric-owner --owner=0 --group=0 \
+  -C "${ROOTFS_DIR}" -czf "${ROOTFS_TAR}" .
+sha256sum "${ROOTFS_TAR}" > "${ROOTFS_TAR}.sha256"
+
+echo "[OK] Root filesystem tarball ready: ${ROOTFS_TAR}"

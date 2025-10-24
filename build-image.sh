@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-. "$(dirname "$0")/r4-config.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "${SCRIPT_DIR}/r4-config.sh"
 
 require_root
 check_bins losetup parted partprobe mkfs.vfat mkfs.ext4 tar gzip sha256sum curl
@@ -48,17 +49,6 @@ if [ -d "${FIRMWARE_DIR}" ]; then
   cp -a "${FIRMWARE_DIR}/." mnt/BPI-ROOT/lib/firmware/
 fi
 
-if [ ! -f mnt/BPI-ROOT/lib/firmware/regulatory.db ]; then
-  curl -fsSL -o mnt/BPI-ROOT/lib/firmware/regulatory.db \
-    https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db
-fi
-if [ ! -f mnt/BPI-ROOT/lib/firmware/regulatory.db.p7s ]; then
-  curl -fsSL -o mnt/BPI-ROOT/lib/firmware/regulatory.db.p7s \
-    https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db.p7s
-fi
-mkdir -p mnt/BPI-ROOT/etc/alternatives
-ln -sf ../lib/firmware/regulatory.db mnt/BPI-ROOT/etc/alternatives/wireless-regdb
-ln -sf ../lib/firmware/regulatory.db.p7s mnt/BPI-ROOT/etc/alternatives/wireless-regdb.p7s
 
 mkdir -p mnt/BPI-ROOT/etc
 cat > mnt/BPI-ROOT/etc/fstab <<EOF_FSTAB

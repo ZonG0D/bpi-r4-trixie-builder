@@ -3,9 +3,12 @@ import hashlib
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -71,6 +74,109 @@ def download_to(url: str, dest: Path) -> None:
         tmp_path.replace(dest)
 
 
+def download_with_candidates(
+    urls: List[str], dest: Path, expected_hash: Optional[str] = None
+) -> bool:
+    for url in urls:
+        try:
+            download_to(url, dest)
+        except RuntimeError as exc:
+            logging.warning("Failed to download %s: %s", url, exc)
+            continue
+        if expected_hash and sha256sum(dest) != expected_hash:
+            logging.warning(
+                "Discarding firmware from %s due to SHA256 mismatch", url
+            )
+            dest.unlink(missing_ok=True)
+            continue
+        return True
+    return False
+
+
+def copy_firmware_from_host(
+    glob_patterns: List[str], dest: Path, expected_hash: Optional[str] = None
+) -> bool:
+    for base in (Path("/lib/firmware"), Path("/usr/lib/firmware")):
+        for pattern in glob_patterns:
+            for candidate in base.glob(pattern):
+                if not candidate.is_file():
+                    continue
+                if expected_hash and sha256sum(candidate) != expected_hash:
+                    logging.warning(
+                        "Host firmware %s hash mismatch, continuing fallback", candidate
+                    )
+                    continue
+                logging.info("Using firmware from host: %s", candidate)
+                ensure_parent(dest)
+                shutil.copy2(candidate, dest)
+                return True
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="linux-firmware-"))
+    try:
+        try:
+            subprocess.run(
+                ["apt-get", "update"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                ["apt-get", "download", "linux-firmware"],
+                check=True,
+                cwd=tmp_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            logging.warning("Failed to download linux-firmware package: %s", exc)
+            return False
+
+        debs = list(tmp_root.glob("linux-firmware_*.deb"))
+        if not debs:
+            logging.warning("No linux-firmware package found in %s", tmp_root)
+            return False
+
+        extract_dir = tmp_root / "extract"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                ["dpkg-deb", "-x", str(debs[0]), str(extract_dir)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            logging.warning("Failed to extract linux-firmware package: %s", exc)
+            return False
+
+        for base in (
+            extract_dir / "lib" / "firmware",
+            extract_dir / "usr" / "lib" / "firmware",
+        ):
+            if not base.exists():
+                continue
+            for pattern in glob_patterns:
+                for candidate in base.glob(pattern):
+                    if not candidate.is_file():
+                        continue
+                    if expected_hash and sha256sum(candidate) != expected_hash:
+                        logging.warning(
+                            "Package firmware %s hash mismatch, continuing fallback",
+                            candidate,
+                        )
+                        continue
+                    logging.info(
+                        "Using firmware from downloaded package: %s", candidate
+                    )
+                    ensure_parent(dest)
+                    shutil.copy2(candidate, dest)
+                    return True
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+    return False
+
+
 def github_asset(artifact: Dict[str, Any]) -> None:
     token = os.environ.get("GITHUB_TOKEN")
     headers = {
@@ -95,13 +201,47 @@ def github_asset(artifact: Dict[str, Any]) -> None:
 
 
 def kernel_firmware(artifact: Dict[str, Any]) -> None:
+    dest = PROJECT_ROOT / artifact["destination"]
+    name = artifact.get("name", "")
+    expected = artifact.get("sha256")
     url = artifact["url"]
+
+    if name == "mt7996_dsp":
+        base = (
+            "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
+        )
+        candidates = [
+            f"{base}/mediatek/mt7996/mt7996_dsp.bin",
+            f"{base}/mediatek/mt7996_dsp.bin",
+        ]
+        if download_with_candidates(candidates, dest, expected):
+            return
+        patterns = [
+            "mediatek/mt7996/mt7996_dsp.bin",
+            "mediatek/mt7996_dsp.bin",
+        ]
+        if copy_firmware_from_host(patterns, dest, expected):
+            return
+        raise RuntimeError(
+            "Could not fetch mt7996_dsp.bin via upstream or host/package fallback"
+        )
+
+    if "/mediatek/mt7996/" not in url:
+        base, filename = url.rsplit("/", 1)
+        if filename.startswith("mt7996_") and base.endswith("/mediatek"):
+            candidates = [
+                f"{base}/mt7996/{filename}",
+                url,
+            ]
+            if download_with_candidates(candidates, dest, expected):
+                return
+
     try:
-        download_to(url, PROJECT_ROOT / artifact["destination"])
+        download_to(url, dest)
     except RuntimeError as exc:
         if "HTTP 403" in str(exc) and "?" not in url:
             logging.warning("Retrying firmware download with ?h=HEAD: %s", url)
-            download_to(url + "?h=HEAD", PROJECT_ROOT / artifact["destination"])
+            download_to(url + "?h=HEAD", dest)
         else:
             raise
 

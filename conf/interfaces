@@ -1,0 +1,6 @@
+# /etc/network/interfaces.d/bpi-r4
+allow-hotplug lan0
+iface lan0 inet dhcp
+
+allow-hotplug wan0
+iface wan0 inet dhcp

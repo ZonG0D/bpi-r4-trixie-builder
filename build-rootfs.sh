@@ -80,9 +80,7 @@ chmod +x "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 printf '%s\n' "${DEBIAN_SOURCES}" > "${ROOTFS_DIR}/etc/apt/sources.list"
 
 chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get update'
-if [ ! -f "${ROOTFS_DIR}/usr/share/keyrings/debian-archive-keyring.gpg" ]; then
-  chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install debian-archive-keyring'
-fi
+chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; test -f /usr/share/keyrings/debian-archive-keyring.gpg || apt-get -y --no-install-recommends install debian-archive-keyring'
 
 chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get update'
 chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install locales'

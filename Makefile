@@ -1,30 +1,29 @@
-# Banana Pi R4 Trixie Builder
+SHELL := /bin/bash
+MAKEFLAGS += --warn-undefined-variables
 
-OUT        := out
-ROOTFS_TAR := $(OUT)/trixie_arm64.tar.gz
-IMG        := $(OUT)/bpi-r4_trixie_6.12_sdmmc.img.gz
+CONFIG := $(CURDIR)/r4-config.sh
+OUT_DIR := $(shell bash -c '. $(CONFIG) >/dev/null 2>&1; echo $$OUT_DIR')
 
-.PHONY: all fetch local clean
+.DEFAULT_GOAL := fetch
 
-all: fetch
+.PHONY: fetch local clean assets rootfs kernel uboot image bootstrap
 
-fetch: ## Download prebuilt kernel, bootloader, and firmware, then build image
-	@echo "==> Fetching assets for BPI-R4 (Debian Trixie)"
-	@mkdir -p $(OUT)
-	@python3 fetch-assets.py bpi-r4 6.12 sdmmc
-	@bash rootfs-build.sh
-	@bash image-build.sh
-	@echo "==> Image ready: $(IMG)"
+fetch:
+	@set -euo pipefail; ./bootstrap.sh
+	@set -euo pipefail; ./fetch-assets.py
+	@set -euo pipefail; ./build-rootfs.sh
+	@set -euo pipefail; KERNEL_ARCHIVE="$(OUT_DIR)/bpi-r4_6.17.0-main.tar.gz" ./build-image.sh
 
-local: ## Build kernel + u-boot locally, then assemble image
-	@echo "==> Building local assets for BPI-R4"
-	@mkdir -p $(OUT)
-	@bash build-uboot.sh
-	@bash build-kernel.sh
-	@bash rootfs-build.sh
-	@bash image-build.sh
-	@echo "==> Local image ready: $(IMG)"
+local:
+	@set -euo pipefail; ./bootstrap.sh
+	@set -euo pipefail; ./fetch-assets.py kernel_firmware
+	@set -euo pipefail; ./build-uboot.sh
+	@set -euo pipefail; ./build-kernel.sh
+	@set -euo pipefail; ./build-rootfs.sh
+	@set -euo pipefail; KERNEL_ARCHIVE="$(OUT_DIR)/bpi-r4_v6.12-main.tar.gz" ./build-image.sh
 
-clean: ## Remove all build artifacts
-	@echo "==> Cleaning output directory"
-	@rm -rf $(OUT)/*
+clean:
+	@set -euo pipefail; \
+	if mountpoint -q "$(CURDIR)/work/mnt/boot"; then umount "$(CURDIR)/work/mnt/boot"; fi; \
+	if mountpoint -q "$(CURDIR)/work/mnt/root"; then umount "$(CURDIR)/work/mnt/root"; fi; \
+	rm -rf "$(CURDIR)/out" "$(CURDIR)/work"

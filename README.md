@@ -23,10 +23,7 @@ Single-board focus. No multi-device logic. No excess glue.
 Install the base dependencies:
 
 ```bash
-sudo apt update
-sudo apt install debootstrap qemu-user-static binfmt-support \
-  parted python3 python3-requests curl xz-utils gzip tar \
-  build-essential ca-certificates git
+sudo ./bootstrap.sh
 ````
 
 For full local compilation:
@@ -46,12 +43,13 @@ Clone and build:
 git clone https://github.com/ZonG0D/bpi-r4-trixie-builder.git
 cd bpi-r4-trixie-builder
 make fetch   # default: use prebuilt kernel/uboot assets
+             # downloads artifacts listed in assets-manifest.json
 ```
 
 or build everything from source:
 
 ```bash
-make local   # compile kernel + uboot locally
+make local   # compile kernel + uboot locally, firmware via kernel.org
 ```
 
 cleanup:
@@ -65,6 +63,8 @@ Artifacts are placed in `out/`:
 ```
 bpi-r4_trixie_6.12_sdmmc.img.gz
 bpi-r4_trixie_6.12_sdmmc.img.gz.sha256
+trixie_arm64.tar.gz
+logs/
 ```
 
 ---
@@ -123,11 +123,13 @@ aeonsemi/as21x1x_fw.bin
 
 ```
 r4-config.sh      – Board constants and US Debian mirrors
+bootstrap.sh      – Host dependency validator / installer
 build-rootfs.sh   – Creates Debian Trixie arm64 root filesystem
 build-kernel.sh   – Optional kernel (6.12+) build
 build-uboot.sh    – Optional U-Boot build
 build-image.sh    – Assembles bootable SDMMC image
 fetch-assets.py   – Fetches firmware / verified binaries
+assets-manifest.json – Release + firmware checksum manifest
 Makefile          – Entry: make fetch | make local | make clean
 conf/             – Network + service templates
 firmware/         – Optional local cache

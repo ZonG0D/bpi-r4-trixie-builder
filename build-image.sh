@@ -4,132 +4,85 @@ set -euo pipefail
 . "$(dirname "$0")/r4-config.sh"
 
 require_root
-log_start "build-image"
+check_bins losetup parted partprobe mkfs.vfat mkfs.ext4 tar gzip sha256sum curl
 
-check_bins parted losetup mkfs.ext4 tar gzip sha256sum rsync blkid dd zcat
+UBOOT_BASE="${OUT_DIR}/bpi-r4_sdmmc.img.gz"
+ROOTFS_TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
+KERNEL_TAR=$(ls "${OUT_DIR}"/bpi-r4_*main*.tar.gz 2>/dev/null | sort | tail -n1 || true)
 
-ROOTFS_ARCHIVE="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
-BOOTLOADER_ARCHIVE="${OUT_DIR}/bpi-r4_sdmmc.img.gz"
-KERNEL_ARCHIVE="${KERNEL_ARCHIVE:-}"
+[ -f "${UBOOT_BASE}" ] || fail "Missing U-Boot image at ${UBOOT_BASE}"
+[ -f "${ROOTFS_TAR}" ] || fail "Missing rootfs tarball at ${ROOTFS_TAR}"
+[ -n "${KERNEL_TAR}" ] || fail "Missing kernel bundle in ${OUT_DIR}"
 
-if [ ! -f "${ROOTFS_ARCHIVE}" ]; then
-    echo "[ERROR] Missing root filesystem archive: ${ROOTFS_ARCHIVE}" >&2
-    exit 1
-fi
-
-if [ ! -f "${BOOTLOADER_ARCHIVE}" ]; then
-    echo "[ERROR] Missing bootloader image: ${BOOTLOADER_ARCHIVE}" >&2
-    exit 1
-fi
-
-if [ -z "${KERNEL_ARCHIVE}" ]; then
-    KERNEL_ARCHIVE=$(find "${OUT_DIR}" -maxdepth 1 -type f -name "${BOARD}_*.tar.gz" | sort | head -n1 || true)
-fi
-
-if [ -z "${KERNEL_ARCHIVE}" ] || [ ! -f "${KERNEL_ARCHIVE}" ]; then
-    echo "[ERROR] Missing kernel archive in ${OUT_DIR}" >&2
-    exit 1
-fi
-
-IMAGE_RAW="${OUT_DIR}/${BOARD}_${DISTRO}_${KERNEL}_${DEVICE}.img"
-IMAGE_GZ="${IMAGE_RAW}.gz"
-IMAGE_SIZE=${IMAGE_SIZE:-4096}
-
-rm -f "${IMAGE_RAW}" "${IMAGE_GZ}"
-truncate -s "${IMAGE_SIZE}M" "${IMAGE_RAW}"
-
-LOOPDEV=$(losetup --show --find "${IMAGE_RAW}")
+FINAL_BASE="${OUT_DIR}/bpi-r4_trixie_${KERNEL}_sdmmc.img"
+cp "${UBOOT_BASE}" "${FINAL_BASE}.gz"
+gzip -df "${FINAL_BASE}.gz"
 
 cleanup() {
-    set +e
-    if mountpoint -q "${WORK_DIR}/mnt/boot"; then
-        umount "${WORK_DIR}/mnt/boot"
-    fi
-    if mountpoint -q "${WORK_DIR}/mnt/root"; then
-        umount "${WORK_DIR}/mnt/root"
-    fi
-    if [ -n "${LOOPDEV}" ]; then
-        losetup -d "${LOOPDEV}" 2>/dev/null || true
-    fi
+  set +e
+  if mountpoint -q mnt/BPI-ROOT; then umount mnt/BPI-ROOT; fi
+  if mountpoint -q mnt/BPI-BOOT; then umount mnt/BPI-BOOT; fi
+  if [ -n "${LDEV:-}" ]; then
+    losetup -d "${LDEV}" >/dev/null 2>&1 || true
+  fi
+  set -e
 }
 trap cleanup EXIT
 
-zcat "${BOOTLOADER_ARCHIVE}" | dd of="${LOOPDEV}" bs=512 conv=notrunc oflag=direct status=none
+mkdir -p mnt/BPI-BOOT mnt/BPI-ROOT
 
-parted -s "${LOOPDEV}" mklabel gpt
-parted -s "${LOOPDEV}" unit MiB mkpart loader1 0.5 2
-parted -s "${LOOPDEV}" unit MiB mkpart loader2 2 4
-parted -s "${LOOPDEV}" unit MiB mkpart env 4 6
-parted -s "${LOOPDEV}" unit MiB mkpart reserved 6 8
-parted -s "${LOOPDEV}" unit MiB mkpart boot 8 264
-parted -s "${LOOPDEV}" unit MiB mkpart root 264 100%
-parted -s "${LOOPDEV}" print
+LDEV=$(losetup --find --show "${FINAL_BASE}")
+partprobe "${LDEV}"
 
-partprobe "${LOOPDEV}"
+mount "${LDEV}p${BOOT_PART}" mnt/BPI-BOOT
+mount "${LDEV}p${ROOT_PART}" mnt/BPI-ROOT
 
-BOOT_PART="${LOOPDEV}p${BOOT_PARTITION}"
-ROOT_PART="${LOOPDEV}p${ROOT_PARTITION}"
+tar --numeric-owner -xzf "${ROOTFS_TAR}" -C mnt/BPI-ROOT
 
-mkfs.ext4 -F -L BPI-BOOT "${BOOT_PART}"
-mkfs.ext4 -F -L BPI-ROOT "${ROOT_PART}"
+tar --strip-components=1 -xzf "${KERNEL_TAR}" -C mnt/BPI-BOOT BPI-BOOT
+mkdir -p mnt/BPI-ROOT/lib
+tar --strip-components=2 -xzf "${KERNEL_TAR}" -C mnt/BPI-ROOT/lib BPI-ROOT/lib
 
-mkdir -p "${WORK_DIR}/mnt/boot" "${WORK_DIR}/mnt/root"
-mount "${BOOT_PART}" "${WORK_DIR}/mnt/boot"
-mount "${ROOT_PART}" "${WORK_DIR}/mnt/root"
-
-ROOT_MNT="${WORK_DIR}/mnt/root"
-BOOT_MNT="${WORK_DIR}/mnt/boot"
-
-mkdir -p "${WORK_DIR}/kernel-extract"
-rm -rf "${WORK_DIR}/kernel-extract"/*
-
-tar --same-owner --numeric-owner -xzf "${ROOTFS_ARCHIVE}" -C "${ROOT_MNT}"
-
-tar --same-owner --numeric-owner -xzf "${KERNEL_ARCHIVE}" -C "${WORK_DIR}/kernel-extract"
-
-if [ -d "${WORK_DIR}/kernel-extract/lib" ]; then
-    rsync -a "${WORK_DIR}/kernel-extract/lib/" "${ROOT_MNT}/lib/"
-fi
-if [ -d "${WORK_DIR}/kernel-extract/boot" ]; then
-    rsync -a "${WORK_DIR}/kernel-extract/boot/" "${BOOT_MNT}/"
-fi
-if [ -d "${WORK_DIR}/kernel-extract/bananapi" ]; then
-    rsync -a "${WORK_DIR}/kernel-extract/bananapi/" "${BOOT_MNT}/bananapi/"
+mkdir -p mnt/BPI-ROOT/lib/firmware
+if [ -d "${FIRMWARE_DIR}" ]; then
+  cp -a "${FIRMWARE_DIR}/." mnt/BPI-ROOT/lib/firmware/
 fi
 
-mkdir -p "${ROOT_MNT}/lib/firmware"
-if [ -d "${FIRMWARE_DIR}" ] && find "${FIRMWARE_DIR}" -mindepth 1 -print -quit >/dev/null 2>&1; then
-    rsync -a "${FIRMWARE_DIR}/" "${ROOT_MNT}/lib/firmware/"
+if [ ! -f mnt/BPI-ROOT/lib/firmware/regulatory.db ]; then
+  curl -fsSL -o mnt/BPI-ROOT/lib/firmware/regulatory.db \
+    https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db
+fi
+if [ ! -f mnt/BPI-ROOT/lib/firmware/regulatory.db.p7s ]; then
+  curl -fsSL -o mnt/BPI-ROOT/lib/firmware/regulatory.db.p7s \
+    https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db.p7s
+fi
+mkdir -p mnt/BPI-ROOT/etc/alternatives
+ln -sf ../lib/firmware/regulatory.db mnt/BPI-ROOT/etc/alternatives/wireless-regdb
+ln -sf ../lib/firmware/regulatory.db.p7s mnt/BPI-ROOT/etc/alternatives/wireless-regdb.p7s
+
+mkdir -p mnt/BPI-ROOT/etc
+cat > mnt/BPI-ROOT/etc/fstab <<EOF_FSTAB
+/dev/mmcblk${MMCDEV}p${ROOT_PART} / ext4 defaults 0 1
+/dev/mmcblk${MMCDEV}p${BOOT_PART} /boot vfat defaults 0 2
+EOF_FSTAB
+
+echo "bpi-r4" > mnt/BPI-ROOT/etc/hostname
+
+mkdir -p "mnt/BPI-BOOT${UBOOTCFG_DIR}"
+touch "mnt/BPI-BOOT${UBOOTCFG_FILE}"
+if ! grep -q 'Customize kernel arguments' "mnt/BPI-BOOT${UBOOTCFG_FILE}" 2>/dev/null; then
+cat <<UENV >> "mnt/BPI-BOOT${UBOOTCFG_FILE}"
+# Customize kernel arguments below as needed
+# bootopts=console=ttyS0,115200n8 root=/dev/mmcblk0p${ROOT_PART} rw
+UENV
 fi
 
-PARTUUID_BOOT=$(blkid -s PARTUUID -o value "${BOOT_PART}")
-PARTUUID_ROOT=$(blkid -s PARTUUID -o value "${ROOT_PART}")
+cleanup
+trap - EXIT
+rmdir mnt/BPI-ROOT mnt/BPI-BOOT 2>/dev/null || true
 
-cat <<FSTAB > "${ROOT_MNT}/etc/fstab"
-PARTUUID=${PARTUUID_ROOT}  /      ext4  defaults,noatime  0 1
-PARTUUID=${PARTUUID_BOOT}  /boot  ext4  defaults,noatime  0 2
-proc    /proc   proc    defaults    0 0
-FSTAB
+gzip -n "${FINAL_BASE}"
+FINAL_IMG="${FINAL_BASE}.gz"
+sha256sum "${FINAL_IMG}" > "${FINAL_IMG}.sha256"
 
-echo "${BOARD}" > "${ROOT_MNT}/etc/hostname"
-
-UBOOT_FILE="${BOOT_MNT}${UBOOTCFG}"
-if [ -f "${UBOOT_FILE}" ]; then
-    sed -i "s/%PARTUUID%/${PARTUUID_ROOT}/g" "${UBOOT_FILE}"
-fi
-
-find "${ROOT_MNT}" -print0 | xargs -0 touch -h -d '@0'
-find "${BOOT_MNT}" -print0 | xargs -0 touch -h -d '@0'
-
-sync
-
-umount "${BOOT_MNT}"
-umount "${ROOT_MNT}"
-losetup -d "${LOOPDEV}"
-LOOPDEV=""
-rm -rf "${WORK_DIR}/kernel-extract"
-
-gzip -n "${IMAGE_RAW}"
-sha256sum "${IMAGE_GZ}" > "${IMAGE_GZ}.sha256"
-
-echo "[OK] Image ready: ${IMAGE_GZ}"
+echo "[OK] Image ready: ${FINAL_IMG}"

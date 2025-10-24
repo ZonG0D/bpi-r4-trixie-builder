@@ -15,6 +15,7 @@ WORK_DIR="$(pwd)/work"
 FIRMWARE_DIR="$(pwd)/firmware"
 UBOOTCFG_DIR=/bananapi/bpi-r4/linux
 UBOOTCFG_FILE="${UBOOTCFG_DIR}/uEnv.txt"
+WIFI_REGDOMAIN="${WIFI_REGDOMAIN:-US}"
 
 DEBIAN_SOURCES=$(cat <<'SRC'
 deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware

@@ -14,6 +14,7 @@ BASE_PACKAGES="\
   procps less kmod ethtool iptables dnsmasq fake-hwclock systemd-timesyncd parted \
   gdisk cloud-guest-utils e2fsprogs wireless-regdb firmware-linux firmware-linux-nonfree \
   firmware-mediatek usr-is-merged"
+REGDOMAIN="${WIFI_REGDOMAIN}"
 
 chroot_qemu() {
   chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c "$*"
@@ -127,6 +128,8 @@ chroot_qemu 'ln -sf /lib/systemd/system/serial-getty@.service \
 mkdir -p "${ROOTFS_DIR}/etc/systemd/network" \
          "${ROOTFS_DIR}/etc/dnsmasq.d" \
          "${ROOTFS_DIR}/etc/systemd/system" \
+         "${ROOTFS_DIR}/etc/hostapd" \
+         "${ROOTFS_DIR}/etc/default" \
          "${ROOTFS_DIR}/usr/local/sbin"
 
 cat > "${ROOTFS_DIR}/etc/systemd/network/10-wan.network" <<'EOF'
@@ -184,43 +187,179 @@ dhcp-option=option:router,192.168.153.1
 dhcp-option=option:dns-server,192.168.153.1
 EOF
 
+cat > "${ROOTFS_DIR}/etc/hostapd/hostapd-5g.conf" <<EOF
+country_code=${REGDOMAIN}
+ieee80211d=1
+interface=wlp1s0
+bridge=br-lan
+ssid=BPI-R4-5G
+hw_mode=a
+channel=149
+ieee80211ax=1
+ieee80211be=1
+he_oper_chwidth=1
+vht_oper_chwidth=1
+eht_oper_chwidth=2
+wpa=2
+wpa_key_mgmt=SAE
+rsn_pairwise=CCMP
+sae_require_mfp=1
+wpa_passphrase=ChangeMe-Strong-12
+EOF
+
+cat > "${ROOTFS_DIR}/etc/hostapd/hostapd-6g.conf" <<EOF
+country_code=${REGDOMAIN}
+ieee80211d=1
+interface=wlan1
+bridge=br-lan
+ssid=BPI-R4-6G
+hw_mode=a
+channel=5
+ieee80211ax=1
+ieee80211be=1
+eht_oper_chwidth=3
+wpa=2
+wpa_key_mgmt=SAE
+rsn_pairwise=CCMP
+sae_require_mfp=1
+wpa_passphrase=ChangeMe-Strong-12
+EOF
+
+cat > "${ROOTFS_DIR}/etc/default/hostapd" <<'EOF'
+DAEMON_CONF="/etc/hostapd/hostapd-5g.conf"
+RUN_DAEMON="yes"
+EOF
+
 cat > "${ROOTFS_DIR}/etc/nftables.conf" <<'EOF'
 #!/usr/sbin/nft -f
-table inet fw {
+flush ruleset
+table inet filter {
   chain input {
     type filter hook input priority 0;
-    policy drop;
     ct state established,related accept
     iif lo accept
-    tcp dport { 22, 53 } accept
+    tcp dport { 22, 53, 67, 68 } accept
     udp dport { 53, 67, 68 } accept
-    icmp type { echo-request, echo-reply } accept
+    ip protocol icmp accept
+    counter drop
   }
 
   chain forward {
     type filter hook forward priority 0;
-    policy drop;
-    ct state established,related accept
-    iif "br-lan" oif "wan" accept
+    accept
   }
 
   chain output {
     type filter hook output priority 0;
-    policy accept;
-  }
-
-  chain prerouting {
-    type nat hook prerouting priority -100;
-    policy accept;
-  }
-
-  chain postrouting {
-    type nat hook postrouting priority 100;
-    policy accept;
-    oif "wan" masquerade
+    accept
   }
 }
 EOF
+
+cat > "${ROOTFS_DIR}/etc/default/wifi-regdom" <<EOF
+REGDOMAIN=${REGDOMAIN}
+EOF
+
+if [ -e "${ROOTFS_DIR}/lib/firmware/regulatory.db-debian" ]; then
+  ln -sf regulatory.db-debian "${ROOTFS_DIR}/lib/firmware/regulatory.db"
+fi
+
+cat > "${ROOTFS_DIR}/usr/local/sbin/wifi-set-regdom.sh" <<EOF
+#!/bin/sh
+set -eu
+
+REGDOMAIN_DEFAULT="${REGDOMAIN}"
+if [ -r /etc/default/wifi-regdom ]; then
+  # shellcheck disable=SC1091
+  . /etc/default/wifi-regdom
+  if [ -n "\${REGDOMAIN:-}" ]; then
+    REGDOMAIN_DEFAULT="\${REGDOMAIN}"
+  fi
+fi
+
+if [ -z "\${REGDOMAIN_DEFAULT}" ]; then
+  exit 0
+fi
+
+exec /sbin/iw reg set "\${REGDOMAIN_DEFAULT}"
+EOF
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/wifi-set-regdom.sh"
+
+cat > "${ROOTFS_DIR}/etc/systemd/system/wifi-regdom.service" <<'EOF'
+[Unit]
+Description=Set Wi-Fi regulatory domain
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wifi-set-regdom.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh" <<'EOF'
+#!/bin/sh
+set -eu
+
+print_section() {
+  printf '\n== %s ==\n' "$1"
+}
+
+if ! command -v iw >/dev/null 2>&1; then
+  echo "[WARN] iw is not available; Wi-Fi checks will be limited" >&2
+fi
+
+print_section "Regulatory domain"
+if command -v iw >/dev/null 2>&1; then
+  iw reg get || true
+else
+  echo "iw not installed"
+fi
+
+print_section "Regulatory database"
+if [ -e /lib/firmware/regulatory.db ]; then
+  readlink -f /lib/firmware/regulatory.db || true
+else
+  echo "regulatory.db missing"
+fi
+
+print_section "Primary radio"
+if command -v iw >/dev/null 2>&1; then
+  iw dev wlp1s0 info || true
+else
+  echo "iw not installed"
+fi
+
+print_section "PHY EHT/HE capabilities"
+if command -v iw >/dev/null 2>&1; then
+  phy_list=$(ls /sys/class/ieee80211 2>/dev/null || true)
+  if [ -n "${phy_list}" ]; then
+    for phy in ${phy_list}; do
+      printf '[%s]\n' "${phy}"
+      iw phy "${phy}" info | grep -nE 'EHT|HE|320|160' || true
+    done
+  else
+    echo "No PHYs detected"
+  fi
+else
+  echo "iw not installed"
+fi
+
+print_section "cfg80211 recent logs"
+dmesg | grep -i cfg80211 | tail -n 20 || true
+
+print_section "hostapd status"
+systemctl status hostapd --no-pager || true
+
+print_section "nftables status"
+systemctl status nftables --no-pager || true
+
+print_section "nftables ruleset"
+nft list ruleset || true
+EOF
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh"
 
 cat > "${ROOTFS_DIR}/usr/local/sbin/firstboot-grow.sh" <<'EOF'
 #!/bin/sh
@@ -270,9 +409,11 @@ for unit in \
   systemd-networkd.service \
   systemd-resolved.service \
   nftables.service \
+  hostapd.service \
   dnsmasq.service \
   systemd-timesyncd.service \
-  firstboot-grow.service
+  firstboot-grow.service \
+  wifi-regdom.service
 do
   SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable "${unit}"
 done

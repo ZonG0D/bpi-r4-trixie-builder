@@ -86,8 +86,13 @@ fi
 
 chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get update'
 chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install locales'
+# locale-gen might fail if the locale is already generated, so ignore errors.
 chroot_qemu 'locale-gen en_US.UTF-8 || true'
-chroot_qemu 'update-locale LANG=en_US.UTF-8'
+# update-locale is not available in the minimal environment, so configure it manually.
+cat > "${ROOTFS_DIR}/etc/default/locale" <<'EOF'
+LANG="en_US.UTF-8"
+LC_ALL="en_US.UTF-8"
+EOF
 chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install \
   openssh-server iproute2 nftables xz-utils hostapd iw ca-certificates curl'
 

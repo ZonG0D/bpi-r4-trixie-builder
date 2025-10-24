@@ -94,7 +94,7 @@ LANG="en_US.UTF-8"
 LC_ALL="en_US.UTF-8"
 EOF
 chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install \
-  openssh-server iproute2 nftables xz-utils hostapd iw ca-certificates curl'
+  systemd-sysv openssh-server iproute2 nftables xz-utils hostapd iw ca-certificates curl'
 
 if [ -f "${ROOTFS_DIR}/etc/ssh/sshd_config" ]; then
   sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "${ROOTFS_DIR}/etc/ssh/sshd_config" || true

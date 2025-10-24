@@ -22,49 +22,49 @@
       "name": "mt7996_dsp",
       "type": "kernel_firmware",
       "url": "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/mediatek/mt7996_dsp.bin",
-      "sha256": "dadb7f621ab06ccd545b4cf77f38cefe0dfbae9fe12fb5c091b6bed456721429",
+      "sha256": "1be4d3767243a748604d49521c5ec4a545a95f310d5a5c6c5d43baab7b767463",
       "destination": "firmware/mediatek/mt7996_dsp.bin"
     },
     {
       "name": "mt7996_wa",
       "type": "kernel_firmware",
       "url": "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/mediatek/mt7996_wa_233.bin",
-      "sha256": "62e9b89ce9881f5fad182c02c718c2c7bcaf71893f92e711a13b70bb5fb8f308",
+      "sha256": "8faeac76c753df8aa17f31e3278d4cc11acbd6c81b469b8ce9a058854bc81c87",
       "destination": "firmware/mediatek/mt7996_wa_233.bin"
     },
     {
       "name": "mt7996_wm",
       "type": "kernel_firmware",
       "url": "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/mediatek/mt7996_wm_233.bin",
-      "sha256": "c85ebde9db71d9ef63012c9e9f39409eafba23c28912e360206b47cf46ba7a1f",
+      "sha256": "c832d1e5942a40bed149e55acbd8f4fc913c5909f3162723874e9efd86aa7667",
       "destination": "firmware/mediatek/mt7996_wm_233.bin"
     },
     {
       "name": "mt7996_eeprom",
       "type": "kernel_firmware",
       "url": "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/mediatek/mt7996_eeprom_233.bin",
-      "sha256": "bc4cd0026f0cf5179fd172c4e19d8d316e476a2fce292aa9ddfb3d3e167b03a5",
+      "sha256": "d4e2c032657c35d79f651d7e3b6af2e05f6a498228be31394d032640851a9643",
       "destination": "firmware/mediatek/mt7996_eeprom_233.bin"
     },
     {
       "name": "mt7996_rom_patch",
       "type": "kernel_firmware",
       "url": "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/mediatek/mt7996_rom_patch_233.bin",
-      "sha256": "29bdb7d67d6263198c91d7b6ce1d3fa555e69bade70407ccfdd7dafa1ee34f72",
+      "sha256": "819ae2f6705ee173f35a235da4efea5eb50c9f0d7ea72063e1430e2455fec3bd",
       "destination": "firmware/mediatek/mt7996_rom_patch_233.bin"
     },
     {
       "name": "mt7988_phy",
       "type": "kernel_firmware",
       "url": "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/mediatek/mt7988/i2p5ge-phy-pmb.bin",
-      "sha256": "3372e0384feab9f96945f66809ab26b34978b8f90bd8b55b9e52cdd2edb12273",
+      "sha256": "643157e984732eccad6aa5e1f80a2be82a6cbf747aac25b54c75eefeccaf8aec",
       "destination": "firmware/mediatek/mt7988/i2p5ge-phy-pmb.bin"
     },
     {
       "name": "as21x1x",
       "type": "kernel_firmware",
       "url": "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/aeonsemi/as21x1x_fw.bin",
-      "sha256": "a601efcd8d957fc448dadbec9282d009f0717b372c4829abae73d75535676bee",
+      "sha256": "ea5ebd370450da6cafa0dd90997a244d70772c131ae4c8d6287bb652c7abc199",
       "destination": "firmware/aeonsemi/as21x1x_fw.bin"
     }
   ]

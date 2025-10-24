@@ -4,7 +4,7 @@ set -euo pipefail
 . "$(dirname "$0")/r4-config.sh"
 
 require_root
-check_bins debootstrap curl tar gzip xz sha256sum rsync "${QEMU_BIN}"
+check_bins debootstrap curl tar gzip xz sha256sum rsync chroot mount umount "${QEMU_BIN}"
 
 ROOTFS_DIR="${WORK_DIR}/rootfs-${DISTRO}-${ARCH}"
 ROOTFS_TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
@@ -79,27 +79,25 @@ chmod +x "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 
 printf '%s\n' "${DEBIAN_SOURCES}" > "${ROOTFS_DIR}/etc/apt/sources.list"
 
-chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get update'
-if [ ! -f "${ROOTFS_DIR}/usr/share/keyrings/debian-archive-keyring.gpg" ]; then
-  chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install debian-archive-keyring'
-fi
-
-chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get update'
-chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install locales'
-# locale-gen might fail if the locale is already generated, so ignore errors.
-chroot_qemu 'locale-gen en_US.UTF-8 || true'
-# update-locale is not available in the minimal environment, so configure it manually.
-cat > "${ROOTFS_DIR}/etc/default/locale" <<'EOF'
-LANG="en_US.UTF-8"
-LC_ALL="en_US.UTF-8"
-EOF
-chroot_qemu 'export DEBIAN_FRONTEND=noninteractive; apt-get -y --no-install-recommends install \
-  systemd-sysv openssh-server iproute2 nftables xz-utils hostapd iw ca-certificates curl'
+chroot_qemu 'export DEBIAN_FRONTEND=noninteractive
+apt-get -o Dpkg::Use-Pty=0 update
+apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y \
+  systemd systemd-sysv udev dbus \
+  locales openssh-server nftables xz-utils hostapd iw ca-certificates \
+  net-tools iproute2 curl
+sed -i "s/^# \?en_US.UTF-8/en_US.UTF-8/" /etc/locale.gen || true
+locale-gen en_US.UTF-8
+printf "LANG=en_US.UTF-8\nLANGUAGE=en_US:en\n" >/etc/default/locale
+if [ ! -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
+  apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y debian-archive-keyring
+fi'
 
 if [ -f "${ROOTFS_DIR}/etc/ssh/sshd_config" ]; then
   sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "${ROOTFS_DIR}/etc/ssh/sshd_config" || true
 fi
-chroot_qemu 'echo root:bananapi | chpasswd'
+chroot_qemu 'echo root:zong0d | chpasswd'
+chroot_qemu 'ln -sf /lib/systemd/system/serial-getty@.service \
+  /etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service'
 
 mkdir -p "${ROOTFS_DIR}/lib/firmware"
 
@@ -108,7 +106,7 @@ if [ -d "${FIRMWARE_DIR}" ] && \
   rsync -a "${FIRMWARE_DIR}/" "${ROOTFS_DIR}/lib/firmware/"
 fi
 
-chroot_qemu 'apt-get clean'
+chroot_qemu 'apt-get -o Dpkg::Use-Pty=0 clean'
 rm -rf "${ROOTFS_DIR}/var/lib/apt/lists"/*
 rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 

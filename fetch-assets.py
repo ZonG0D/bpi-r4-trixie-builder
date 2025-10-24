@@ -99,6 +99,15 @@ FIRMWARE_HEADERS = {
 }
 
 
+FIRMWARE_SYMLINKS = {
+    "mediatek/mt7996/mt7996_wm.bin": "mediatek/mt7996/mt7996_wm_233.bin",
+    "mediatek/mt7996/mt7996_wa.bin": "mediatek/mt7996/mt7996_wa_233.bin",
+    "mediatek/mt7996/mt7996_rom_patch.bin": "mediatek/mt7996/mt7996_rom_patch_233.bin",
+    "mediatek/mt7996/mt7996_eeprom_bpi_r4.bin": "mediatek/mt7996/mt7996_eeprom_233.bin",
+    "mediatek/mt7996/mt7996_eeprom_233_2i5i6i.bin": "mediatek/mt7996/mt7996_eeprom_bpi_r4.bin",
+}
+
+
 def download_firmware():
     for relative, url in FIRMWARE_SOURCES.items():
         dest = FIRMWARE_DIR / relative
@@ -119,6 +128,19 @@ def download_firmware():
         print(f"[OK] Firmware {relative}")
 
 
+def create_firmware_symlinks():
+    for link, target in FIRMWARE_SYMLINKS.items():
+        link_path = FIRMWARE_DIR / link
+        target_path = FIRMWARE_DIR / target
+        if not target_path.exists():
+            print(f"[WARN] Target for symlink missing: {target}")
+            continue
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        if link_path.exists() or link_path.is_symlink():
+            link_path.unlink()
+        link_path.symlink_to(target_path.name)
+
+
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
@@ -130,6 +152,7 @@ def main():
     download(kernel_url, OUT_DIR / kernel_name)
 
     download_firmware()
+    create_firmware_symlinks()
 
 
 if __name__ == "__main__":

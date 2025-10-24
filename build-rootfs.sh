@@ -8,9 +8,23 @@ check_bins debootstrap curl tar gzip xz sha256sum rsync chroot mount umount "${Q
 
 ROOTFS_DIR="${WORK_DIR}/rootfs-${DISTRO}-${ARCH}"
 ROOTFS_TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
+BASE_PACKAGES="\
+  systemd systemd-sysv udev dbus locales openssh-server nftables xz-utils hostapd iw \
+  wireless-tools iproute2 iputils-ping net-tools curl ca-certificates rsync vim-tiny \
+  procps less kmod ethtool iptables-nft dnsmasq fake-hwclock systemd-timesyncd parted \
+  gdisk cloud-guest-utils e2fsprogs wireless-regdb firmware-linux firmware-linux-nonfree \
+  firmware-mediatek usr-is-merged"
 
 chroot_qemu() {
-  chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/bash -lc "$*"
+  chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c "$*"
+}
+
+ensure_merged_usr() {
+  for d in bin sbin lib lib64; do
+    if [ ! -e "${ROOTFS_DIR}/${d}" ]; then
+      ln -s "usr/${d}" "${ROOTFS_DIR}/${d}"
+    fi
+  done
 }
 
 prepare_mountpoints() {
@@ -27,16 +41,16 @@ mount_chroot() {
   mount -t sysfs sys "${ROOTFS_DIR}/sys"
   mount --bind /dev "${ROOTFS_DIR}/dev"
   mount --bind /dev/pts "${ROOTFS_DIR}/dev/pts"
-  mount --bind /run "${ROOTFS_DIR}/run" || true
+  mount -t tmpfs tmpfs "${ROOTFS_DIR}/run"
 }
 
 umount_chroot() {
   set +e
+  umount -l "${ROOTFS_DIR}/run" 2>/dev/null
   umount -l "${ROOTFS_DIR}/dev/pts" 2>/dev/null
   umount -l "${ROOTFS_DIR}/dev" 2>/dev/null
   umount -l "${ROOTFS_DIR}/proc" 2>/dev/null
   umount -l "${ROOTFS_DIR}/sys" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/run" 2>/dev/null
   set -e
 }
 
@@ -55,7 +69,7 @@ DEBOOTSTRAP_MIRROR="http://deb.debian.org/debian"
 
 echo "[INFO] Running debootstrap (stage 1)"
 DEBIAN_FRONTEND=noninteractive debootstrap \
-  --arch="${ARCH}" --variant=minbase --foreign \
+  --arch="${ARCH}" --variant=minbase --foreign --merged-usr \
   "${DISTRO}" "${ROOTFS_DIR}" "${DEBOOTSTRAP_MIRROR}"
 
 install -D "${QEMU_BIN}" "${ROOTFS_DIR}${QEMU_BIN}"
@@ -71,6 +85,8 @@ mount_chroot
 chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c \
   "/debootstrap/debootstrap --second-stage"
 
+ensure_merged_usr
+
 cat > "${ROOTFS_DIR}/usr/sbin/policy-rc.d" <<'EOF'
 #!/bin/sh
 exit 101
@@ -79,18 +95,24 @@ chmod +x "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 
 printf '%s\n' "${DEBIAN_SOURCES}" > "${ROOTFS_DIR}/etc/apt/sources.list"
 
-chroot_qemu 'export DEBIAN_FRONTEND=noninteractive
+SETUP_SCRIPT="${ROOTFS_DIR}/tmp/rootfs-setup.sh"
+mkdir -p "${ROOTFS_DIR}/tmp"
+cat > "${SETUP_SCRIPT}" <<EOF
+#!/bin/sh
+set -eu
+export DEBIAN_FRONTEND=noninteractive
 apt-get -o Dpkg::Use-Pty=0 update
-apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y \
-  systemd systemd-sysv udev dbus \
-  locales openssh-server nftables xz-utils hostapd iw ca-certificates \
-  net-tools iproute2 curl
+apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y ${BASE_PACKAGES}
 sed -i "s/^# \?en_US.UTF-8/en_US.UTF-8/" /etc/locale.gen || true
 locale-gen en_US.UTF-8
 printf "LANG=en_US.UTF-8\nLANGUAGE=en_US:en\n" >/etc/default/locale
 if [ ! -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
   apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y debian-archive-keyring
-fi'
+fi
+EOF
+chmod +x "${SETUP_SCRIPT}"
+chroot_qemu "/tmp/rootfs-setup.sh"
+rm -f "${SETUP_SCRIPT}"
 
 if [ -f "${ROOTFS_DIR}/etc/ssh/sshd_config" ]; then
   sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "${ROOTFS_DIR}/etc/ssh/sshd_config" || true
@@ -99,11 +121,181 @@ chroot_qemu 'echo root:zong0d | chpasswd'
 chroot_qemu 'ln -sf /lib/systemd/system/serial-getty@.service \
   /etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service'
 
+mkdir -p "${ROOTFS_DIR}/etc/systemd/network" \
+         "${ROOTFS_DIR}/etc/dnsmasq.d" \
+         "${ROOTFS_DIR}/etc/systemd/system" \
+         "${ROOTFS_DIR}/usr/local/sbin"
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/10-wan.network" <<'EOF'
+[Match]
+Name=wan
+
+[Network]
+DHCP=yes
+
+[DHCPv4]
+UseDNS=yes
+ClientIdentifier=mac
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/20-br-lan.netdev" <<'EOF'
+[NetDev]
+Name=br-lan
+Kind=bridge
+
+[Bridge]
+STP=no
+MulticastSnooping=no
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/21-br-lan.network" <<'EOF'
+[Match]
+Name=br-lan
+
+[Network]
+Address=192.168.153.1/24
+IPForward=yes
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/30-lan-slaves.network" <<'EOF'
+[Match]
+Name=lan1 lan2 lan3
+
+[Network]
+Bridge=br-lan
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/00-names.link" <<'EOF'
+[Match]
+Path=platform-15020000.switch-*
+
+[Link]
+NamePolicy=kernel
+EOF
+
+cat > "${ROOTFS_DIR}/etc/dnsmasq.d/lan.conf" <<'EOF'
+interface=br-lan
+bind-interfaces
+dhcp-range=192.168.153.100,192.168.153.200,12h
+dhcp-option=option:router,192.168.153.1
+dhcp-option=option:dns-server,192.168.153.1
+EOF
+
+cat > "${ROOTFS_DIR}/etc/nftables.conf" <<'EOF'
+#!/usr/sbin/nft -f
+table inet fw {
+  chain input {
+    type filter hook input priority 0;
+    policy drop;
+    ct state established,related accept
+    iif lo accept
+    tcp dport { 22, 53 } accept
+    udp dport { 53, 67, 68 } accept
+    icmp type { echo-request, echo-reply } accept
+  }
+
+  chain forward {
+    type filter hook forward priority 0;
+    policy drop;
+    ct state established,related accept
+    iif "br-lan" oif "wan" accept
+  }
+
+  chain output {
+    type filter hook output priority 0;
+    policy accept;
+  }
+
+  chain prerouting {
+    type nat hook prerouting priority -100;
+    policy accept;
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority 100;
+    policy accept;
+    oif "wan" masquerade
+  }
+}
+EOF
+
+cat > "${ROOTFS_DIR}/usr/local/sbin/firstboot-grow.sh" <<'EOF'
+#!/bin/sh
+set -eu
+
+disk=/dev/mmcblk0
+part=${disk}p6
+
+sgdisk -e "${disk}" || true
+partprobe "${disk}" || true
+growpart "${disk}" 6 || true
+resize2fs "${part}" || true
+
+systemctl disable firstboot-grow.service || true
+rm -f /etc/systemd/system/multi-user.target.wants/firstboot-grow.service
+rm -f /etc/systemd/system/firstboot-grow.service
+EOF
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/firstboot-grow.sh"
+
+cat > "${ROOTFS_DIR}/etc/systemd/system/firstboot-grow.service" <<'EOF'
+[Unit]
+Description=One-time GPT expand and rootfs grow
+ConditionFirstBoot=yes
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/firstboot-grow.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable services directly from the host because the chroot does not have a
+# running systemd instance. Using --root performs the enablement offline while
+# still respecting the units' Install metadata.
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl is required to enable services inside the rootfs" >&2
+  exit 1
+fi
+
+systemctl --root="${ROOTFS_DIR}" enable \
+  systemd-networkd \
+  systemd-resolved \
+  nftables \
+  dnsmasq \
+  systemd-timesyncd \
+  fake-hwclock \
+  firstboot-grow.service
+chroot_qemu 'rm -f /etc/resolv.conf && ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf'
+
 mkdir -p "${ROOTFS_DIR}/lib/firmware"
 
 if [ -d "${FIRMWARE_DIR}" ] && \
    find "${FIRMWARE_DIR}" -mindepth 1 -print -quit >/dev/null 2>&1; then
   rsync -a "${FIRMWARE_DIR}/" "${ROOTFS_DIR}/lib/firmware/"
+fi
+
+MT7996_DIR="${ROOTFS_DIR}/lib/firmware/mediatek/mt7996"
+if [ -d "${MT7996_DIR}" ]; then
+  (
+    cd "${MT7996_DIR}" || exit 0
+    if [ -f mt7996_eeprom_233.bin ] && [ ! -e mt7996_eeprom_bpi_r4.bin ]; then
+      ln -sf mt7996_eeprom_233.bin mt7996_eeprom_bpi_r4.bin
+    fi
+    if [ -e mt7996_eeprom_bpi_r4.bin ] && [ ! -e mt7996_eeprom_233_2i5i6i.bin ]; then
+      ln -sf mt7996_eeprom_bpi_r4.bin mt7996_eeprom_233_2i5i6i.bin
+    fi
+    if [ -f mt7996_wm_233.bin ] && [ ! -e mt7996_wm.bin ]; then
+      ln -sf mt7996_wm_233.bin mt7996_wm.bin
+    fi
+    if [ -f mt7996_wa_233.bin ] && [ ! -e mt7996_wa.bin ]; then
+      ln -sf mt7996_wa_233.bin mt7996_wa.bin
+    fi
+    if [ -f mt7996_rom_patch_233.bin ] && [ ! -e mt7996_rom_patch.bin ]; then
+      ln -sf mt7996_rom_patch_233.bin mt7996_rom_patch.bin
+    fi
+  )
 fi
 
 chroot_qemu 'apt-get -o Dpkg::Use-Pty=0 clean'

@@ -40,18 +40,41 @@ prepare_mountpoints() {
            "${ROOTFS_DIR}/run"
 }
 
+populate_devtmpfs() {
+  if [ ! -e "${ROOTFS_DIR}/dev/null" ]; then
+    mknod -m 0666 "${ROOTFS_DIR}/dev/null" c 1 3
+  fi
+  if [ ! -e "${ROOTFS_DIR}/dev/zero" ]; then
+    mknod -m 0666 "${ROOTFS_DIR}/dev/zero" c 1 5
+  fi
+  if [ ! -e "${ROOTFS_DIR}/dev/random" ]; then
+    mknod -m 0666 "${ROOTFS_DIR}/dev/random" c 1 8
+  fi
+  if [ ! -e "${ROOTFS_DIR}/dev/urandom" ]; then
+    mknod -m 0666 "${ROOTFS_DIR}/dev/urandom" c 1 9
+  fi
+  if [ ! -e "${ROOTFS_DIR}/dev/tty" ]; then
+    mknod -m 0666 "${ROOTFS_DIR}/dev/tty" c 5 0
+  fi
+  if [ ! -e "${ROOTFS_DIR}/dev/console" ]; then
+    mknod -m 0600 "${ROOTFS_DIR}/dev/console" c 5 1
+  fi
+  ln -sf pts/ptmx "${ROOTFS_DIR}/dev/ptmx"
+}
+
 mount_chroot() {
   prepare_mountpoints
 
   mountpoint -q "${ROOTFS_DIR}/proc" || mount -t proc proc "${ROOTFS_DIR}/proc"
   mountpoint -q "${ROOTFS_DIR}/sys" || mount -t sysfs sys "${ROOTFS_DIR}/sys"
-  mountpoint -q "${ROOTFS_DIR}/dev" || mount --bind /dev "${ROOTFS_DIR}/dev"
+  if ! mountpoint -q "${ROOTFS_DIR}/dev"; then
+    mount -t devtmpfs devtmpfs "${ROOTFS_DIR}/dev"
+    populate_devtmpfs
+  fi
   if ! mountpoint -q "${ROOTFS_DIR}/dev/pts"; then
     mount -t devpts -o gid=5,mode=620,ptmxmode=000 devpts "${ROOTFS_DIR}/dev/pts"
   fi
   mountpoint -q "${ROOTFS_DIR}/run" || mount --bind /run "${ROOTFS_DIR}/run"
-
-  ln -sf pts/ptmx "${ROOTFS_DIR}/dev/ptmx"
 }
 
 umount_chroot() {

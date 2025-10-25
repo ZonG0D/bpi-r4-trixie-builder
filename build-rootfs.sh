@@ -39,18 +39,26 @@ mount_chroot() {
   prepare_mountpoints
   mount -t proc proc "${ROOTFS_DIR}/proc"
   mount -t sysfs sys "${ROOTFS_DIR}/sys"
-  mount --bind /dev "${ROOTFS_DIR}/dev"
+  mount --rbind /dev "${ROOTFS_DIR}/dev"
+  mount --rbind /run "${ROOTFS_DIR}/run"
   mount --bind /dev/pts "${ROOTFS_DIR}/dev/pts"
-  mount -t tmpfs tmpfs "${ROOTFS_DIR}/run"
+  for dir in dev run; do
+    mount --make-rslave "${ROOTFS_DIR}/${dir}"
+  done
 }
 
 umount_chroot() {
   set +e
-  umount -l "${ROOTFS_DIR}/run" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/dev/pts" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/dev" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/proc" 2>/dev/null
-  umount -l "${ROOTFS_DIR}/sys" 2>/dev/null
+  for mp in \
+    "${ROOTFS_DIR}/dev/pts" \
+    "${ROOTFS_DIR}/dev" \
+    "${ROOTFS_DIR}/run" \
+    "${ROOTFS_DIR}/proc" \
+    "${ROOTFS_DIR}/sys"; do
+    if mountpoint -q "${mp}"; then
+      umount -lR "${mp}" 2>/dev/null || umount -l "${mp}" 2>/dev/null || true
+    fi
+  done
   set -e
 }
 
@@ -114,6 +122,8 @@ chmod +x "${SETUP_SCRIPT}"
 chroot_qemu "/tmp/rootfs-setup.sh"
 rm -f "${SETUP_SCRIPT}"
 
+chroot_qemu 'SYSTEMD_OFFLINE=1 systemctl preset-all || true'
+
 if [ -f "${ROOTFS_DIR}/etc/ssh/sshd_config" ]; then
   sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "${ROOTFS_DIR}/etc/ssh/sshd_config" || true
 fi
@@ -124,7 +134,9 @@ chroot_qemu 'ln -sf /lib/systemd/system/serial-getty@.service \
 mkdir -p "${ROOTFS_DIR}/etc/systemd/network" \
          "${ROOTFS_DIR}/etc/dnsmasq.d" \
          "${ROOTFS_DIR}/etc/systemd/system" \
-         "${ROOTFS_DIR}/usr/local/sbin"
+         "${ROOTFS_DIR}/usr/local/sbin" \
+         "${ROOTFS_DIR}/etc/modules-load.d" \
+         "${ROOTFS_DIR}/etc/systemd/system/nftables.service.d"
 
 cat > "${ROOTFS_DIR}/etc/systemd/network/10-wan.network" <<'EOF'
 [Match]
@@ -182,42 +194,58 @@ dhcp-option=option:dns-server,192.168.153.1
 EOF
 
 cat > "${ROOTFS_DIR}/etc/nftables.conf" <<'EOF'
-#!/usr/sbin/nft -f
-table inet fw {
+flush ruleset
+table inet filter {
   chain input {
-    type filter hook input priority 0;
-    policy drop;
+    type filter hook input priority 0; policy drop;
     ct state established,related accept
     iif lo accept
     tcp dport { 22, 53 } accept
     udp dport { 53, 67, 68 } accept
-    icmp type { echo-request, echo-reply } accept
+    icmp type { echo-request, echo-reply, time-exceeded, destination-unreachable } accept
   }
 
   chain forward {
-    type filter hook forward priority 0;
-    policy drop;
+    type filter hook forward priority 0; policy drop;
     ct state established,related accept
     iif "br-lan" oif "wan" accept
   }
 
   chain output {
-    type filter hook output priority 0;
-    policy accept;
+    type filter hook output priority 0; policy accept;
   }
 
   chain prerouting {
-    type nat hook prerouting priority -100;
-    policy accept;
+    type nat hook prerouting priority -100; policy accept;
   }
 
   chain postrouting {
-    type nat hook postrouting priority 100;
-    policy accept;
+    type nat hook postrouting priority 100; policy accept;
     oif "wan" masquerade
   }
 }
 EOF
+
+cat > "${ROOTFS_DIR}/etc/modules-load.d/nftables.conf" <<'EOF'
+nf_tables
+nf_conntrack
+nf_nat
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/system/nftables.service.d/override.conf" <<'EOF'
+[Unit]
+After=systemd-sysctl.service sys-kernel-config.mount network-pre.target
+Before=network-pre.target network.target systemd-networkd.service
+
+[Service]
+ExecStartPre=/sbin/modprobe nf_tables
+EOF
+
+cat > "${ROOTFS_DIR}/etc/default/hostapd" <<'EOF'
+DAEMON_OPTS="-s"
+EOF
+
+chroot_qemu 'nft -c -f /etc/nftables.conf'
 
 cat > "${ROOTFS_DIR}/usr/local/sbin/firstboot-grow.sh" <<'EOF'
 #!/bin/sh
@@ -273,6 +301,10 @@ do
   SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable "${unit}"
 done
 
+chroot_qemu 'systemd-tmpfiles --create --boot'
+
+chroot_qemu "/usr/lib/ssh/sshd-keygen 'all' || true"
+
 if [ -L "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service" ] && \
    [ "$(readlink "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service")" = "/dev/null" ]; then
   echo "[INFO] fake-hwclock.service is masked; skipping enable"
@@ -280,6 +312,8 @@ else
   echo "[INFO] Leaving fake-hwclock.service at its packaged default state"
 fi
 chroot_qemu 'rm -f /etc/resolv.conf && ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf'
+
+chroot_qemu 'systemd-analyze verify /usr/lib/systemd/system/nftables.service /usr/lib/systemd/system/systemd-networkd.service'
 
 mkdir -p "${ROOTFS_DIR}/lib/firmware"
 
@@ -313,6 +347,9 @@ fi
 chroot_qemu 'apt-get -o Dpkg::Use-Pty=0 clean'
 rm -rf "${ROOTFS_DIR}/var/lib/apt/lists"/*
 rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
+
+:> "${ROOTFS_DIR}/etc/machine-id"
+rm -f "${ROOTFS_DIR}/var/lib/dbus/machine-id"
 
 umount_chroot
 trap - EXIT

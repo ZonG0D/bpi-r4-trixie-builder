@@ -326,14 +326,17 @@ net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 
-install -D -m0644 "${SCRIPT_DIR}/conf/generic/etc/hostapd/hostapd.conf" \
-  "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
-sed -i \
-  -e "s/@COUNTRY@/${BUILD_REGDOMAIN}/g" \
-  -e "s/@WIFI_IFACE_2G@/${WIFI_IFACE_2G}/g" \
-  -e "s/@WIFI_IFACE_5G@/${WIFI_IFACE_5G}/g" \
-  -e "s/@WIFI_IFACE_6G@/${WIFI_IFACE_6G}/g" \
-  "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
+for band in 2g 5g 6g; do
+  template="${SCRIPT_DIR}/conf/generic/etc/hostapd/hostapd-${band}.conf"
+  target="${ROOTFS_DIR}/etc/hostapd/hostapd-${band}.conf"
+  install -D -m0644 "${template}" "${target}"
+  sed -i \
+    -e "s/@COUNTRY@/${BUILD_REGDOMAIN}/g" \
+    -e "s/@WIFI_IFACE_2G@/${WIFI_IFACE_2G}/g" \
+    -e "s/@WIFI_IFACE_5G@/${WIFI_IFACE_5G}/g" \
+    -e "s/@WIFI_IFACE_6G@/${WIFI_IFACE_6G}/g" \
+    "${target}"
+done
 
 for iface in "${WIFI_IFACES[@]}"; do
   [ -n "${iface}" ] || continue
@@ -349,7 +352,7 @@ EOF
 done
 
 cat > "${ROOTFS_DIR}/etc/default/hostapd" <<'EOF'
-DAEMON_CONF="/etc/hostapd/hostapd.conf"
+DAEMON_CONF="/etc/hostapd/hostapd-2g.conf /etc/hostapd/hostapd-5g.conf /etc/hostapd/hostapd-6g.conf"
 RUN_DAEMON="yes"
 EOF
 

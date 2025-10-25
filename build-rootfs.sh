@@ -18,7 +18,7 @@ BASE_PACKAGES="\
 
 : "${BUILD_REGDOMAIN:=${WIFI_REGDOMAIN:-}}"
 : "${BUILD_REGDOMAIN:?set BUILD_REGDOMAIN, example US}"
-WIFI_IFACE="${WIFI_IFACE:-wlp1s0}"
+WIFI_IFACE="${WIFI_IFACE:-wlan0}"
 
 chroot_qemu() {
   chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c "$*"

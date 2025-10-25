@@ -74,7 +74,9 @@ mount_chroot() {
   if ! mountpoint -q "${ROOTFS_DIR}/dev/pts"; then
     mount -t devpts -o gid=5,mode=620,ptmxmode=000 devpts "${ROOTFS_DIR}/dev/pts"
   fi
-  mountpoint -q "${ROOTFS_DIR}/run" || mount --bind /run "${ROOTFS_DIR}/run"
+  if ! mountpoint -q "${ROOTFS_DIR}/run"; then
+    mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "${ROOTFS_DIR}/run"
+  fi
 }
 
 umount_chroot() {

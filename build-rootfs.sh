@@ -31,8 +31,41 @@ if [ -n "${WIFI_IFACE:-}" ]; then
 fi
 WIFI_IFACES=("${WIFI_IFACE_2G}" "${WIFI_IFACE_5G}" "${WIFI_IFACE_6G}")
 
+USE_PROOT=0
+
 chroot_qemu() {
-  chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c "$*"
+  local cmd="$1"
+  if [ "${USE_PROOT}" -eq 1 ]; then
+    if ! command -v proot >/dev/null 2>&1; then
+      echo "[ERROR] proot is required for QEMU execution but is not available" >&2
+      exit 1
+    fi
+    proot -q "${QEMU_BIN}" \
+      -S "${ROOTFS_DIR}" \
+      -0 \
+      -w / \
+      -b /proc:/proc \
+      -b /sys:/sys \
+      /bin/sh -c "${cmd}"
+  else
+    chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c "${cmd}"
+  fi
+}
+
+detect_chroot_backend() {
+  USE_PROOT=0
+  if chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c 'sh -c exit 0' >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v proot >/dev/null 2>&1; then
+    USE_PROOT=1
+    echo "[INFO] Falling back to proot for chroot operations" >&2
+    return 0
+  fi
+
+  echo "[ERROR] Unable to execute nested ${ARCH} binaries; install proot or enable binfmt_misc" >&2
+  exit 1
 }
 
 ensure_merged_usr() {
@@ -44,6 +77,20 @@ ensure_merged_usr() {
 }
 
 prepare_mountpoints() {
+  local path
+  for path in \
+    proc \
+    sys \
+    sys/fs/cgroup \
+    dev \
+    dev/pts \
+    dev/mqueue \
+    run; do
+    if [ -L "${ROOTFS_DIR}/${path}" ]; then
+      rm -f "${ROOTFS_DIR}/${path}"
+    fi
+  done
+
   mkdir -p "${ROOTFS_DIR}/proc" \
            "${ROOTFS_DIR}/sys" \
            "${ROOTFS_DIR}/sys/fs/cgroup" \
@@ -73,6 +120,7 @@ resolve_tty_gid() {
 }
 
 populate_devtmpfs_gaps() {
+  mkdir -p "${ROOTFS_DIR}/dev/pts"
   if [ ! -e "${ROOTFS_DIR}/dev/null" ]; then
     mknod -m 0666 "${ROOTFS_DIR}/dev/null" c 1 3
   fi
@@ -90,6 +138,9 @@ populate_devtmpfs_gaps() {
   fi
   if [ ! -e "${ROOTFS_DIR}/dev/console" ]; then
     mknod -m 0600 "${ROOTFS_DIR}/dev/console" c 5 1
+  fi
+  if [ ! -e "${ROOTFS_DIR}/dev/pts/ptmx" ]; then
+    mknod -m 0666 "${ROOTFS_DIR}/dev/pts/ptmx" c 5 2
   fi
 }
 
@@ -109,18 +160,30 @@ have_fs() {
 mount_chroot() {
   prepare_mountpoints
 
-  mountpoint -q "${ROOTFS_DIR}/proc" || mount -t proc -o nosuid,nodev,noexec proc "${ROOTFS_DIR}/proc"
-  mountpoint -q "${ROOTFS_DIR}/sys" || mount -t sysfs sys "${ROOTFS_DIR}/sys"
+  if ! mountpoint -q "${ROOTFS_DIR}/proc"; then
+    mount -t proc -o nosuid,nodev,noexec proc "${ROOTFS_DIR}/proc"
+  fi
+  SYSFS_MOUNTED=0
+  if ! mountpoint -q "${ROOTFS_DIR}/sys"; then
+    if mount -t sysfs sys "${ROOTFS_DIR}/sys" 2>/dev/null; then
+      SYSFS_MOUNTED=1
+    else
+      echo "[WARN] Unable to mount sysfs inside chroot; continuing without it" >&2
+    fi
+  fi
 
   local mounted_devtmpfs=0
+  local devpts_available=0
   if ! mountpoint -q "${ROOTFS_DIR}/dev"; then
-    mount -t devtmpfs -o mode=0755,nosuid devtmpfs "${ROOTFS_DIR}/dev"
-    mounted_devtmpfs=1
+    if mount -t devtmpfs -o mode=0755,nosuid devtmpfs "${ROOTFS_DIR}/dev" 2>/dev/null; then
+      mounted_devtmpfs=1
+    else
+      echo "[WARN] Unable to mount devtmpfs inside chroot; continuing with existing /dev" >&2
+    fi
   fi
 
-  if [ "${mounted_devtmpfs}" -eq 1 ]; then
-    populate_devtmpfs_gaps
-  fi
+  mkdir -p "${ROOTFS_DIR}/dev/pts"
+  populate_devtmpfs_gaps
 
   if ! mountpoint -q "${ROOTFS_DIR}/dev/pts"; then
     # Use a private devpts instance so mount options do not leak back to the host
@@ -131,12 +194,22 @@ mount_chroot() {
     if [ -e /sys/module/devpts/parameters/newinstance ]; then
       devpts_newinstance=1
     fi
-    if [ "${devpts_newinstance}" -eq 1 ]; then
-      if ! mount -t devpts -o "newinstance,${devpts_opts}" devpts "${ROOTFS_DIR}/dev/pts" 2>/dev/null; then
+    if [ "${mounted_devtmpfs}" -eq 1 ]; then
+      if [ "${devpts_newinstance}" -eq 1 ]; then
+        if ! mount -t devpts -o "newinstance,${devpts_opts}" devpts "${ROOTFS_DIR}/dev/pts" 2>/dev/null; then
+          mount -t devpts -o "${devpts_opts}" devpts "${ROOTFS_DIR}/dev/pts"
+        fi
+      else
         mount -t devpts -o "${devpts_opts}" devpts "${ROOTFS_DIR}/dev/pts"
       fi
+      devpts_available=1
     else
-      mount -t devpts -o "${devpts_opts}" devpts "${ROOTFS_DIR}/dev/pts"
+      if mount --rbind /dev/pts "${ROOTFS_DIR}/dev/pts" 2>/dev/null; then
+        devpts_available=1
+        mount --make-rslave "${ROOTFS_DIR}/dev/pts" 2>/dev/null || true
+      else
+        echo "[WARN] Unable to provide devpts inside chroot; pseudo-terminals may be unavailable" >&2
+      fi
     fi
   fi
 
@@ -146,19 +219,30 @@ mount_chroot() {
     echo "/dev/ptmx must point to pts/ptmx" >&2
     exit 1
   fi
-  if [ ! -c "${ROOTFS_DIR}/dev/pts/ptmx" ]; then
-    echo "devpts misconfigured, missing pts/ptmx" >&2
-    exit 1
+  if [ "${devpts_available}" -eq 1 ]; then
+    if [ ! -c "${ROOTFS_DIR}/dev/pts/ptmx" ]; then
+      echo "devpts misconfigured, missing pts/ptmx" >&2
+      exit 1
+    fi
+  elif [ ! -c "${ROOTFS_DIR}/dev/pts/ptmx" ]; then
+    echo "[WARN] Falling back to static /dev/pts/ptmx device node" >&2
+    mknod -m 0666 "${ROOTFS_DIR}/dev/pts/ptmx" c 5 2 2>/dev/null || true
   fi
 
   if [ ! -L "${ROOTFS_DIR}/dev/shm" ] && ! mountpoint -q "${ROOTFS_DIR}/dev/shm"; then
-    mount -t tmpfs -o nosuid,nodev,noexec,mode=1777 tmpfs "${ROOTFS_DIR}/dev/shm"
+    if ! mount -t tmpfs -o nosuid,nodev,noexec,mode=1777 tmpfs "${ROOTFS_DIR}/dev/shm" 2>/dev/null; then
+      echo "[WARN] Unable to mount tmpfs on /dev/shm inside chroot" >&2
+    fi
   fi
   if have_fs mqueue && ! mountpoint -q "${ROOTFS_DIR}/dev/mqueue"; then
-    mount -t mqueue mqueue "${ROOTFS_DIR}/dev/mqueue"
+    if ! mount -t mqueue mqueue "${ROOTFS_DIR}/dev/mqueue" 2>/dev/null; then
+      echo "[WARN] Unable to mount mqueue inside chroot" >&2
+    fi
   fi
   if ! mountpoint -q "${ROOTFS_DIR}/run"; then
-    mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "${ROOTFS_DIR}/run"
+    if ! mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "${ROOTFS_DIR}/run" 2>/dev/null; then
+      echo "[WARN] Unable to mount tmpfs on /run inside chroot" >&2
+    fi
   fi
 
   if [ -e /sys/fs/cgroup/cgroup.controllers ]; then
@@ -171,7 +255,7 @@ mount_chroot() {
 }
 
 umount_one() {
-  umount "$1" 2>/dev/null || umount -l "$1" 2>/dev/null || true
+  umount "$1" 2>/dev/null || umount -R "$1" 2>/dev/null || umount -l "$1" 2>/dev/null || true
 }
 
 umount_chroot() {
@@ -188,7 +272,9 @@ umount_chroot() {
 }
 
 cleanup() {
-  umount_chroot
+  if [ "${USE_PROOT}" -ne 1 ]; then
+    umount_chroot
+  fi
   rm -f "${ROOTFS_DIR}${QEMU_BIN}"
 }
 
@@ -215,9 +301,14 @@ if [ ! -f "${ROOTFS_DIR}/usr/share/keyrings/debian-archive-keyring.gpg" ] && \
 fi
 
 echo "[INFO] Running debootstrap (stage 2)"
-mount_chroot
-chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c \
-  "/debootstrap/debootstrap --second-stage"
+prepare_mountpoints
+detect_chroot_backend
+if [ "${USE_PROOT}" -eq 0 ]; then
+  mount_chroot
+else
+  populate_devtmpfs_gaps
+fi
+chroot_qemu 'DEBOOTSTRAP_DIR=/debootstrap /debootstrap/debootstrap --second-stage'
 
 ensure_merged_usr
 
@@ -505,7 +596,9 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
-mount_chroot
+if [ "${USE_PROOT}" -eq 0 ]; then
+  mount_chroot
+fi
 SYSTEMCTL_CMD=(systemctl --root="${ROOTFS_DIR}" --no-ask-password)
 SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" preset-all || true
 
@@ -574,7 +667,9 @@ chroot_qemu 'apt-get -o Dpkg::Use-Pty=0 clean'
 rm -rf "${ROOTFS_DIR}/var/lib/apt/lists"/*
 rm -f "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 
-umount_chroot
+if [ "${USE_PROOT}" -eq 0 ]; then
+  umount_chroot
+fi
 
 rm -f "${ROOTFS_DIR}${QEMU_BIN}"
 

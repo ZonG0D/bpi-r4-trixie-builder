@@ -7,6 +7,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 require_root
 check_bins debootstrap curl tar gzip xz sha256sum rsync chroot mount umount "${QEMU_BIN}"
 
+DEBIAN_KEYRING="/usr/share/keyrings/debian-archive-keyring.gpg"
+if [ ! -f "${DEBIAN_KEYRING}" ]; then
+  fail "Missing ${DEBIAN_KEYRING}; run ./prepare-host.sh to install host prerequisites"
+fi
+
+if ! "${QEMU_BIN}" --version >/dev/null 2>&1; then
+  fail "Unable to execute ${QEMU_BIN}; run ./prepare-host.sh to install host prerequisites"
+fi
+
 ROOTFS_DIR="${WORK_DIR}/rootfs-${DISTRO}-${ARCH}"
 ROOTFS_TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
 BASE_PACKAGES="\
@@ -321,9 +330,17 @@ rm -rf "${ROOTFS_DIR:?}"/*
 DEBOOTSTRAP_MIRROR="http://deb.debian.org/debian"
 
 echo "[INFO] Running debootstrap (stage 1)"
+DEBOOTSTRAP_COMMON_ARGS=(
+  --arch="${ARCH}"
+  --variant=minbase
+  --foreign
+  --merged-usr
+  --keyring="${DEBIAN_KEYRING}"
+  --include="${DEBOOTSTRAP_PKGS}"
+)
+
 DEBIAN_FRONTEND=noninteractive debootstrap \
-  --arch="${ARCH}" --variant=minbase --foreign --merged-usr \
-  --include="${DEBOOTSTRAP_PKGS}" \
+  "${DEBOOTSTRAP_COMMON_ARGS[@]}" \
   "${DISTRO}" "${ROOTFS_DIR}" "${DEBOOTSTRAP_MIRROR}"
 
 install -D -m0755 "${QEMU_BIN}" "${ROOTFS_DIR}${QEMU_BIN}"

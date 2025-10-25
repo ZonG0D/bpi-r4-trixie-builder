@@ -22,16 +22,19 @@ automatically
 The build scripts must be executed as `root` (or via `sudo`) because they rely
 on `chroot`, `losetup`, and bind mounts.
 
-Install the required packages on a Debian/Ubuntu host:
+Run the host preparation script to install and validate the required tooling
+before building:
 
 ```bash
-sudo apt update
-sudo apt install \
-  debootstrap qemu-user-static curl tar gzip xz-utils rsync \
-  python3 dosfstools e2fsprogs parted util-linux
+sudo ./prepare-host.sh
 ```
 
-The tool only depends on the system Python 3 runtime and standard library.
+The helper installs `debootstrap`, `qemu-user-static`, `binfmt-support`, the
+Debian archive keyring, filesystem utilities (`dosfstools`, `e2fsprogs`),
+partitioning tools (`parted`, `kpartx`), file synchronization (`rsync`), and
+supporting utilities. It also enables the aarch64 binfmt entry and verifies
+that `qemu-aarch64-static` can execute on the host.
+The build still requires the system Python 3 runtime and standard library.
 
 ---
 
@@ -140,6 +143,7 @@ build-rootfs.sh  – Generates the Debian root filesystem tarball
 build-image.sh   – Assembles the final SDMMC image from downloaded assets
 fetch-assets.py  – Downloads vendor U-Boot, kernel bundle, and firmware
 r4-config.sh     – Shared configuration and helper functions
+prepare-host.sh  – Installs host prerequisites and enables qemu binfmt support
 ```
 
 ---

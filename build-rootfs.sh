@@ -16,6 +16,11 @@ BASE_PACKAGES="\
   gdisk cloud-guest-utils e2fsprogs wireless-regdb firmware-linux firmware-linux-nonfree \
   firmware-mediatek usr-is-merged"
 
+PKGS_BASE="systemd-sysv dbus iproute2 iptables nftables ca-certificates jq curl iw rfkill ethtool bridge-utils"
+PKGS_WIFI="hostapd wireless-regdb"
+PKGS_DEBUG="tcpdump iperf3 procps kmod"
+DEBOOTSTRAP_PKGS="${PKGS_BASE} ${PKGS_WIFI} ${PKGS_DEBUG}"
+
 : "${BUILD_REGDOMAIN:=${WIFI_REGDOMAIN:-}}"
 : "${BUILD_REGDOMAIN:?set BUILD_REGDOMAIN, example US}"
 WIFI_IFACE_2G="${WIFI_IFACE_2G:-wlan0}"
@@ -198,6 +203,7 @@ DEBOOTSTRAP_MIRROR="http://deb.debian.org/debian"
 echo "[INFO] Running debootstrap (stage 1)"
 DEBIAN_FRONTEND=noninteractive debootstrap \
   --arch="${ARCH}" --variant=minbase --foreign --merged-usr \
+  --include="${DEBOOTSTRAP_PKGS}" \
   "${DISTRO}" "${ROOTFS_DIR}" "${DEBOOTSTRAP_MIRROR}"
 
 install -D -m0755 "${QEMU_BIN}" "${ROOTFS_DIR}${QEMU_BIN}"
@@ -233,7 +239,8 @@ export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export SYSTEMD_OFFLINE=1
 apt-get -o Dpkg::Use-Pty=0 update
-apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y ${BASE_PACKAGES}
+apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y \
+  ${BASE_PACKAGES} ${PKGS_BASE} ${PKGS_WIFI} ${PKGS_DEBUG}
 sed -i "s/^# \?en_US.UTF-8/en_US.UTF-8/" /etc/locale.gen || true
 locale-gen en_US.UTF-8
 printf "LANG=en_US.UTF-8\nLANGUAGE=en_US:en\n" >/etc/default/locale
@@ -244,6 +251,10 @@ EOF
 chmod +x "${SETUP_SCRIPT}"
 chroot_qemu "/tmp/rootfs-setup.sh"
 rm -f "${SETUP_SCRIPT}"
+
+rm -f "${ROOTFS_DIR}/lib/firmware/regulatory.db" \
+      "${ROOTFS_DIR}/lib/firmware/regulatory.db.p7s"
+chroot_qemu 'apt-get -o Dpkg::Use-Pty=0 install --no-install-recommends -y --reinstall wireless-regdb'
 
 for regdb in /lib/firmware/regulatory.db /lib/firmware/regulatory.db.p7s; do
   if [ ! -s "${ROOTFS_DIR}${regdb}" ]; then
@@ -284,94 +295,12 @@ UseDNS=yes
 ClientIdentifier=mac
 EOF
 
-cat > "${ROOTFS_DIR}/etc/systemd/network/20-br-lan.netdev" <<'EOF'
-[NetDev]
-Name=br-lan
-Kind=bridge
-
-[Bridge]
-STP=no
-MulticastSnooping=no
-EOF
-
-cat > "${ROOTFS_DIR}/etc/systemd/network/21-br-lan.network" <<'EOF'
-[Match]
-Name=br-lan
-
-[Network]
-Address=192.168.153.1/24
-IPForward=yes
-EOF
-
 cat > "${ROOTFS_DIR}/etc/systemd/network/30-lan-slaves.network" <<'EOF'
 [Match]
 Name=lan1 lan2 lan3
 
 [Network]
 Bridge=br-lan
-EOF
-
-cat > "${ROOTFS_DIR}/etc/systemd/network/25-br-wan-2g.netdev" <<'EOF'
-[NetDev]
-Name=br-wan-2g
-Kind=bridge
-
-[Bridge]
-STP=no
-MulticastSnooping=no
-EOF
-
-cat > "${ROOTFS_DIR}/etc/systemd/network/25-br-wan-5g.netdev" <<'EOF'
-[NetDev]
-Name=br-wan-5g
-Kind=bridge
-
-[Bridge]
-STP=no
-MulticastSnooping=no
-EOF
-
-cat > "${ROOTFS_DIR}/etc/systemd/network/25-br-wan-6g.netdev" <<'EOF'
-[NetDev]
-Name=br-wan-6g
-Kind=bridge
-
-[Bridge]
-STP=no
-MulticastSnooping=no
-EOF
-
-cat > "${ROOTFS_DIR}/etc/systemd/network/26-br-wan-2g.network" <<'EOF'
-[Match]
-Name=br-wan-2g
-
-[Network]
-Address=192.168.201.1/24
-IPForward=yes
-LinkLocalAddressing=no
-IPv6AcceptRA=no
-EOF
-
-cat > "${ROOTFS_DIR}/etc/systemd/network/26-br-wan-5g.network" <<'EOF'
-[Match]
-Name=br-wan-5g
-
-[Network]
-Address=192.168.202.1/24
-IPForward=yes
-LinkLocalAddressing=no
-IPv6AcceptRA=no
-EOF
-
-cat > "${ROOTFS_DIR}/etc/systemd/network/26-br-wan-6g.network" <<'EOF'
-[Match]
-Name=br-wan-6g
-
-[Network]
-Address=192.168.203.1/24
-IPForward=yes
-LinkLocalAddressing=no
-IPv6AcceptRA=no
 EOF
 
 cat > "${ROOTFS_DIR}/etc/systemd/network/00-names.link" <<'EOF'
@@ -382,66 +311,33 @@ Path=platform-15020000.switch-*
 NamePolicy=kernel
 EOF
 
-cat > "${ROOTFS_DIR}/etc/dnsmasq.d/lan.conf" <<'EOF'
-interface=br-lan
-bind-interfaces
-dhcp-range=192.168.153.100,192.168.153.200,12h
-dhcp-option=option:router,192.168.153.1
-dhcp-option=option:dns-server,192.168.153.1
-EOF
+install -D -m0644 "${SCRIPT_DIR}/files/etc/udev/rules.d/76-wifi-names.rules" \
+  "${ROOTFS_DIR}/etc/udev/rules.d/76-wifi-names.rules"
 
-cat > "${ROOTFS_DIR}/etc/dnsmasq.d/wan-ap.conf" <<'EOF'
-interface=br-wan-2g
-dhcp-range=192.168.201.100,192.168.201.200,12h
-dhcp-option=interface:br-wan-2g,option:router,192.168.201.1
-dhcp-option=interface:br-wan-2g,option:dns-server,192.168.201.1
+install -D -m0755 "${SCRIPT_DIR}/files/usr/local/sbin/gen-wifi-udev-rules.sh" \
+  "${ROOTFS_DIR}/usr/local/sbin/gen-wifi-udev-rules.sh"
+install -D -m0644 "${SCRIPT_DIR}/files/etc/systemd/system/firstboot-wifi-udev.service" \
+  "${ROOTFS_DIR}/etc/systemd/system/firstboot-wifi-udev.service"
 
-interface=br-wan-5g
-dhcp-range=192.168.202.100,192.168.202.200,12h
-dhcp-option=interface:br-wan-5g,option:router,192.168.202.1
-dhcp-option=interface:br-wan-5g,option:dns-server,192.168.202.1
+install -D -m0644 "${SCRIPT_DIR}/files/etc/hostapd/hostapd-wlp1s0.conf" \
+  "${ROOTFS_DIR}/etc/hostapd/hostapd-wlp1s0.conf"
+install -D -m0644 "${SCRIPT_DIR}/files/etc/hostapd/hostapd-wlan1.conf" \
+  "${ROOTFS_DIR}/etc/hostapd/hostapd-wlan1.conf"
+install -D -m0644 "${SCRIPT_DIR}/files/etc/hostapd/hostapd-wlan2.conf" \
+  "${ROOTFS_DIR}/etc/hostapd/hostapd-wlan2.conf"
 
-interface=br-wan-6g
-dhcp-range=192.168.203.100,192.168.203.200,12h
-dhcp-option=interface:br-wan-6g,option:router,192.168.203.1
-dhcp-option=interface:br-wan-6g,option:dns-server,192.168.203.1
-EOF
+install -D -m0644 "${SCRIPT_DIR}/files/etc/systemd/system/hostapd@.service" \
+  "${ROOTFS_DIR}/etc/systemd/system/hostapd@.service"
 
-cat > "${ROOTFS_DIR}/etc/sysctl.d/99-disable-ipv6.conf" <<'EOF'
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
-EOF
+install -D -m0644 "${SCRIPT_DIR}/files/etc/systemd/network/br-lan.netdev" \
+  "${ROOTFS_DIR}/etc/systemd/network/br-lan.netdev"
+install -D -m0644 "${SCRIPT_DIR}/files/etc/systemd/network/br-lan.network" \
+  "${ROOTFS_DIR}/etc/systemd/network/br-lan.network"
 
-for band in 2g 5g 6g; do
-  template="${SCRIPT_DIR}/conf/generic/etc/hostapd/hostapd-${band}.conf"
-  target="${ROOTFS_DIR}/etc/hostapd/hostapd-${band}.conf"
-  install -D -m0644 "${template}" "${target}"
-  sed -i \
-    -e "s/@COUNTRY@/${BUILD_REGDOMAIN}/g" \
-    -e "s/@WIFI_IFACE_2G@/${WIFI_IFACE_2G}/g" \
-    -e "s/@WIFI_IFACE_5G@/${WIFI_IFACE_5G}/g" \
-    -e "s/@WIFI_IFACE_6G@/${WIFI_IFACE_6G}/g" \
-    "${target}"
-done
+bash "${SCRIPT_DIR}/ci/smoke_wifi.sh" "${ROOTFS_DIR}"
 
-for iface in "${WIFI_IFACES[@]}"; do
-  [ -n "${iface}" ] || continue
-  cat > "${ROOTFS_DIR}/etc/systemd/network/zz-99-${iface}.network" <<EOF
-[Match]
-Name=${iface}
-
-[Network]
-DHCP=no
-LinkLocalAddressing=no
-IPv6AcceptRA=no
-EOF
-done
-
-cat > "${ROOTFS_DIR}/etc/default/hostapd" <<'EOF'
-DAEMON_CONF="/etc/hostapd/hostapd-2g.conf /etc/hostapd/hostapd-5g.conf /etc/hostapd/hostapd-6g.conf"
-RUN_DAEMON="yes"
-EOF
+rm -f "${ROOTFS_DIR}"/etc/systemd/network/wlan*.network \
+      "${ROOTFS_DIR}"/etc/network/interfaces.d/wlan* || true
 
 cat > "${ROOTFS_DIR}/etc/nftables.conf" <<'EOF'
 #!/usr/sbin/nft -f
@@ -620,13 +516,16 @@ for unit in \
   systemd-networkd.service \
   systemd-resolved.service \
   nftables.service \
-  hostapd.service \
-  dnsmasq.service \
   systemd-timesyncd.service \
   firstboot-grow.service
 do
   SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable "${unit}" || true
 done
+
+SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable firstboot-wifi-udev.service || true
+SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable hostapd@wlp1s0.service || true
+SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable hostapd@wlan1.service || true
+SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable hostapd@wlan2.service || true
 
 for iface in "${WIFI_IFACES[@]}"; do
   [ -n "${iface}" ] || continue

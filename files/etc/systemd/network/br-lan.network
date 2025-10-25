@@ -1,0 +1,7 @@
+[Match]
+Name=br-lan
+
+[Network]
+DHCP=yes
+LLDP=no
+MulticastDNS=no

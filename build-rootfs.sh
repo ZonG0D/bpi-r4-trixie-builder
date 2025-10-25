@@ -41,12 +41,33 @@ ensure_merged_usr() {
 prepare_mountpoints() {
   mkdir -p "${ROOTFS_DIR}/proc" \
            "${ROOTFS_DIR}/sys" \
+           "${ROOTFS_DIR}/sys/fs/cgroup" \
            "${ROOTFS_DIR}/dev" \
            "${ROOTFS_DIR}/dev/pts" \
+           "${ROOTFS_DIR}/dev/mqueue" \
            "${ROOTFS_DIR}/run"
+
+  if [ ! -L "${ROOTFS_DIR}/dev/shm" ]; then
+    mkdir -p "${ROOTFS_DIR}/dev/shm"
+  fi
 }
 
-populate_devtmpfs() {
+resolve_tty_gid() {
+  local tty_gid=5
+
+  if [ -f "${ROOTFS_DIR}/etc/group" ]; then
+    local group_gid
+    group_gid="$(awk -F: '$1 == "tty" { print $3; exit }' "${ROOTFS_DIR}/etc/group" 2>/dev/null || true)"
+    case "${group_gid}" in
+      ''|*[!0-9]*) ;;
+      *) tty_gid="${group_gid}" ;;
+    esac
+  fi
+
+  printf '%s' "${tty_gid}"
+}
+
+populate_devtmpfs_gaps() {
   if [ ! -e "${ROOTFS_DIR}/dev/null" ]; then
     mknod -m 0666 "${ROOTFS_DIR}/dev/null" c 1 3
   fi
@@ -65,33 +86,99 @@ populate_devtmpfs() {
   if [ ! -e "${ROOTFS_DIR}/dev/console" ]; then
     mknod -m 0600 "${ROOTFS_DIR}/dev/console" c 5 1
   fi
-  ln -sf pts/ptmx "${ROOTFS_DIR}/dev/ptmx"
+}
+
+ensure_dev_symlinks() {
+  ln -snf /proc/self/fd "${ROOTFS_DIR}/dev/fd"
+  ln -snf fd/0 "${ROOTFS_DIR}/dev/stdin"
+  ln -snf fd/1 "${ROOTFS_DIR}/dev/stdout"
+  ln -snf fd/2 "${ROOTFS_DIR}/dev/stderr"
+  rm -f "${ROOTFS_DIR}/dev/ptmx"
+  ln -s pts/ptmx "${ROOTFS_DIR}/dev/ptmx"
+}
+
+have_fs() {
+  awk '{print $1}' /proc/filesystems | grep -qx "$1"
 }
 
 mount_chroot() {
   prepare_mountpoints
 
-  mountpoint -q "${ROOTFS_DIR}/proc" || mount -t proc proc "${ROOTFS_DIR}/proc"
+  mountpoint -q "${ROOTFS_DIR}/proc" || mount -t proc -o nosuid,nodev,noexec proc "${ROOTFS_DIR}/proc"
   mountpoint -q "${ROOTFS_DIR}/sys" || mount -t sysfs sys "${ROOTFS_DIR}/sys"
+
+  local mounted_devtmpfs=0
   if ! mountpoint -q "${ROOTFS_DIR}/dev"; then
-    mount -t devtmpfs devtmpfs "${ROOTFS_DIR}/dev"
-    populate_devtmpfs
+    mount -t devtmpfs -o mode=0755,nosuid devtmpfs "${ROOTFS_DIR}/dev"
+    mounted_devtmpfs=1
   fi
+
+  if [ "${mounted_devtmpfs}" -eq 1 ]; then
+    populate_devtmpfs_gaps
+  fi
+
   if ! mountpoint -q "${ROOTFS_DIR}/dev/pts"; then
-    mount -t devpts -o gid=5,mode=620,ptmxmode=000 devpts "${ROOTFS_DIR}/dev/pts"
+    # Use a private devpts instance so mount options do not leak back to the host
+    # (which can otherwise break new PTY allocation on the developer machine).
+    local devpts_gid devpts_opts devpts_newinstance=0
+    devpts_gid="$(resolve_tty_gid)"
+    devpts_opts="gid=${devpts_gid},mode=0620,ptmxmode=0666"
+    if [ -e /sys/module/devpts/parameters/newinstance ]; then
+      devpts_newinstance=1
+    fi
+    if [ "${devpts_newinstance}" -eq 1 ]; then
+      if ! mount -t devpts -o "newinstance,${devpts_opts}" devpts "${ROOTFS_DIR}/dev/pts" 2>/dev/null; then
+        mount -t devpts -o "${devpts_opts}" devpts "${ROOTFS_DIR}/dev/pts"
+      fi
+    else
+      mount -t devpts -o "${devpts_opts}" devpts "${ROOTFS_DIR}/dev/pts"
+    fi
+  fi
+
+  ensure_dev_symlinks
+
+  if [ ! -L "${ROOTFS_DIR}/dev/ptmx" ] || [ "$(readlink "${ROOTFS_DIR}/dev/ptmx")" != "pts/ptmx" ]; then
+    echo "/dev/ptmx must point to pts/ptmx" >&2
+    exit 1
+  fi
+  if [ ! -c "${ROOTFS_DIR}/dev/pts/ptmx" ]; then
+    echo "devpts misconfigured, missing pts/ptmx" >&2
+    exit 1
+  fi
+
+  if [ ! -L "${ROOTFS_DIR}/dev/shm" ] && ! mountpoint -q "${ROOTFS_DIR}/dev/shm"; then
+    mount -t tmpfs -o nosuid,nodev,noexec,mode=1777 tmpfs "${ROOTFS_DIR}/dev/shm"
+  fi
+  if have_fs mqueue && ! mountpoint -q "${ROOTFS_DIR}/dev/mqueue"; then
+    mount -t mqueue mqueue "${ROOTFS_DIR}/dev/mqueue"
   fi
   if ! mountpoint -q "${ROOTFS_DIR}/run"; then
     mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "${ROOTFS_DIR}/run"
   fi
+
+  if [ -e /sys/fs/cgroup/cgroup.controllers ]; then
+    if ! mountpoint -q "${ROOTFS_DIR}/sys/fs/cgroup"; then
+      if ! mount -t cgroup2 -o ro,nsdelegate cgroup2 "${ROOTFS_DIR}/sys/fs/cgroup" 2>/dev/null; then
+        mount -t cgroup2 -o ro cgroup2 "${ROOTFS_DIR}/sys/fs/cgroup" 2>/dev/null || true
+      fi
+    fi
+  fi
+}
+
+umount_one() {
+  umount "$1" 2>/dev/null || umount -l "$1" 2>/dev/null || true
 }
 
 umount_chroot() {
   set +e
-  umount -R "${ROOTFS_DIR}/run" 2>/dev/null
-  umount "${ROOTFS_DIR}/dev/pts" 2>/dev/null
-  umount "${ROOTFS_DIR}/dev" 2>/dev/null
-  umount "${ROOTFS_DIR}/sys" 2>/dev/null
-  umount "${ROOTFS_DIR}/proc" 2>/dev/null
+  umount -R "${ROOTFS_DIR}/run" 2>/dev/null || umount -l "${ROOTFS_DIR}/run" 2>/dev/null
+  umount_one "${ROOTFS_DIR}/dev/shm"
+  umount_one "${ROOTFS_DIR}/dev/mqueue"
+  umount_one "${ROOTFS_DIR}/dev/pts"
+  umount_one "${ROOTFS_DIR}/sys/fs/cgroup"
+  umount_one "${ROOTFS_DIR}/dev"
+  umount_one "${ROOTFS_DIR}/sys"
+  umount_one "${ROOTFS_DIR}/proc"
   set -e
 }
 

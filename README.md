@@ -126,7 +126,16 @@ build-rootfs.sh  – Generates the Debian root filesystem tarball
 build-image.sh   – Assembles the final SDMMC image from downloaded assets
 fetch-assets.py  – Downloads vendor U-Boot, kernel bundle, and firmware
 r4-config.sh     – Shared configuration and helper functions
+bpi-r4-uboot/    – Standalone U-Boot overlay with board fixes
 ```
+
+### U-Boot Overlay Only
+
+The `bpi-r4-uboot/` directory contains a minimal overlay that applies the
+pre-kernel fixes (board identity, storage/env handling, deterministic MAC,
+SPI-NAND partitions, etc.) on top of a clean upstream U-Boot checkout. It does
+not include a Debian userspace and can be consumed independently when only the
+boot ROM stage needs correction.
 
 ---
 

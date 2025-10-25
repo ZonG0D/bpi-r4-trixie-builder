@@ -18,7 +18,13 @@ BASE_PACKAGES="\
 
 : "${BUILD_REGDOMAIN:=${WIFI_REGDOMAIN:-}}"
 : "${BUILD_REGDOMAIN:?set BUILD_REGDOMAIN, example US}"
-WIFI_IFACE="${WIFI_IFACE:-wlan0}"
+WIFI_IFACE_2G="${WIFI_IFACE_2G:-wlan0}"
+WIFI_IFACE_5G="${WIFI_IFACE_5G:-wlan1}"
+WIFI_IFACE_6G="${WIFI_IFACE_6G:-wlan2}"
+if [ -n "${WIFI_IFACE:-}" ]; then
+  WIFI_IFACE_5G="${WIFI_IFACE}"
+fi
+WIFI_IFACES=("${WIFI_IFACE_2G}" "${WIFI_IFACE_5G}" "${WIFI_IFACE_6G}")
 
 chroot_qemu() {
   chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c "$*"
@@ -182,7 +188,9 @@ cat > "${ROOTFS_DIR}/etc/systemd/network/10-wan.network" <<'EOF'
 Name=wan
 
 [Network]
-DHCP=yes
+DHCP=ipv4
+LinkLocalAddressing=no
+IPv6AcceptRA=no
 
 [DHCPv4]
 UseDNS=yes
@@ -216,6 +224,69 @@ Name=lan1 lan2 lan3
 Bridge=br-lan
 EOF
 
+cat > "${ROOTFS_DIR}/etc/systemd/network/25-br-wan-2g.netdev" <<'EOF'
+[NetDev]
+Name=br-wan-2g
+Kind=bridge
+
+[Bridge]
+STP=no
+MulticastSnooping=no
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/25-br-wan-5g.netdev" <<'EOF'
+[NetDev]
+Name=br-wan-5g
+Kind=bridge
+
+[Bridge]
+STP=no
+MulticastSnooping=no
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/25-br-wan-6g.netdev" <<'EOF'
+[NetDev]
+Name=br-wan-6g
+Kind=bridge
+
+[Bridge]
+STP=no
+MulticastSnooping=no
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/26-br-wan-2g.network" <<'EOF'
+[Match]
+Name=br-wan-2g
+
+[Network]
+Address=192.168.201.1/24
+IPForward=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/26-br-wan-5g.network" <<'EOF'
+[Match]
+Name=br-wan-5g
+
+[Network]
+Address=192.168.202.1/24
+IPForward=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+EOF
+
+cat > "${ROOTFS_DIR}/etc/systemd/network/26-br-wan-6g.network" <<'EOF'
+[Match]
+Name=br-wan-6g
+
+[Network]
+Address=192.168.203.1/24
+IPForward=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+EOF
+
 cat > "${ROOTFS_DIR}/etc/systemd/network/00-names.link" <<'EOF'
 [Match]
 Path=platform-15020000.switch-*
@@ -232,27 +303,56 @@ dhcp-option=option:router,192.168.153.1
 dhcp-option=option:dns-server,192.168.153.1
 EOF
 
-install -D -m0644 "${SCRIPT_DIR}/conf/generic/etc/hostapd/hostapd.conf" \
-  "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
-sed -ri \
-  "s/^country=.*/country=${BUILD_REGDOMAIN}/" \
-  "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
-sed -ri \
-  "s/^interface=.*/interface=${WIFI_IFACE}/" \
-  "${ROOTFS_DIR}/etc/hostapd/hostapd.conf"
+cat > "${ROOTFS_DIR}/etc/dnsmasq.d/wan-ap.conf" <<'EOF'
+interface=br-wan-2g
+dhcp-range=192.168.201.100,192.168.201.200,12h
+dhcp-option=interface:br-wan-2g,option:router,192.168.201.1
+dhcp-option=interface:br-wan-2g,option:dns-server,192.168.201.1
 
-cat > "${ROOTFS_DIR}/etc/systemd/network/zz-99-${WIFI_IFACE}.network" <<EOF
+interface=br-wan-5g
+dhcp-range=192.168.202.100,192.168.202.200,12h
+dhcp-option=interface:br-wan-5g,option:router,192.168.202.1
+dhcp-option=interface:br-wan-5g,option:dns-server,192.168.202.1
+
+interface=br-wan-6g
+dhcp-range=192.168.203.100,192.168.203.200,12h
+dhcp-option=interface:br-wan-6g,option:router,192.168.203.1
+dhcp-option=interface:br-wan-6g,option:dns-server,192.168.203.1
+EOF
+
+cat > "${ROOTFS_DIR}/etc/sysctl.d/99-disable-ipv6.conf" <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+
+for band in 2g 5g 6g; do
+  template="${SCRIPT_DIR}/conf/generic/etc/hostapd/hostapd-${band}.conf"
+  target="${ROOTFS_DIR}/etc/hostapd/hostapd-${band}.conf"
+  install -D -m0644 "${template}" "${target}"
+  sed -i \
+    -e "s/@COUNTRY@/${BUILD_REGDOMAIN}/g" \
+    -e "s/@WIFI_IFACE_2G@/${WIFI_IFACE_2G}/g" \
+    -e "s/@WIFI_IFACE_5G@/${WIFI_IFACE_5G}/g" \
+    -e "s/@WIFI_IFACE_6G@/${WIFI_IFACE_6G}/g" \
+    "${target}"
+done
+
+for iface in "${WIFI_IFACES[@]}"; do
+  [ -n "${iface}" ] || continue
+  cat > "${ROOTFS_DIR}/etc/systemd/network/zz-99-${iface}.network" <<EOF
 [Match]
-Name=${WIFI_IFACE}
+Name=${iface}
 
 [Network]
 DHCP=no
 LinkLocalAddressing=no
 IPv6AcceptRA=no
 EOF
+done
 
 cat > "${ROOTFS_DIR}/etc/default/hostapd" <<'EOF'
-DAEMON_CONF="/etc/hostapd/hostapd.conf"
+DAEMON_CONF="/etc/hostapd/hostapd-2g.conf /etc/hostapd/hostapd-5g.conf /etc/hostapd/hostapd-6g.conf"
 RUN_DAEMON="yes"
 EOF
 
@@ -273,7 +373,9 @@ table inet filter {
 
   chain forward {
     type filter hook forward priority 0;
-    accept
+    ct state established,related accept
+    iifname { "br-lan", "br-wan-2g", "br-wan-5g", "br-wan-6g" } oifname "wan" accept
+    counter drop
   }
 
   chain output {
@@ -311,6 +413,8 @@ cat > "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh" <<'EOF'
 #!/bin/sh
 set -eu
 
+WIFI_INTERFACES="@WIFI_INTERFACES@"
+
 print_section() {
   printf '\n== %s ==\n' "$1"
 }
@@ -333,9 +437,14 @@ else
   echo "regulatory.db missing"
 fi
 
-print_section "Primary radio"
+print_section "Radio summary"
 if command -v iw >/dev/null 2>&1; then
-  iw dev @WIFI_IFACE@ info || true
+  for iface in ${WIFI_INTERFACES}; do
+    [ -n "${iface}" ] || continue
+    printf '[%s]\n' "${iface}"
+    iw dev "${iface}" info || true
+    printf '\n'
+  done
 else
   echo "iw not installed"
 fi
@@ -368,7 +477,10 @@ print_section "nftables ruleset"
 nft list ruleset || true
 EOF
 chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh"
-sed -i "s/@WIFI_IFACE@/${WIFI_IFACE}/" "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh"
+wifi_interfaces_string="$(printf '%s ' "${WIFI_IFACES[@]}")"
+wifi_interfaces_string="${wifi_interfaces_string% }"
+sed -i "s|@WIFI_INTERFACES@|${wifi_interfaces_string}|g" \
+  "${ROOTFS_DIR}/usr/local/sbin/wifi-health.sh"
 
 cat > "${ROOTFS_DIR}/usr/local/sbin/firstboot-grow.sh" <<'EOF'
 #!/bin/sh
@@ -429,8 +541,11 @@ do
   SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable "${unit}" || true
 done
 
-SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable \
-  "wlan-prepare@${WIFI_IFACE}.service" || true
+for iface in "${WIFI_IFACES[@]}"; do
+  [ -n "${iface}" ] || continue
+  SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable \
+    "wlan-prepare@${iface}.service" || true
+done
 
 if [ -L "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service" ] && \
    [ "$(readlink "${ROOTFS_DIR}/etc/systemd/system/fake-hwclock.service")" = "/dev/null" ]; then

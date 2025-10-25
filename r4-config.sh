@@ -16,6 +16,9 @@ FIRMWARE_DIR="$(pwd)/firmware"
 UBOOTCFG_DIR=/bananapi/bpi-r4/linux
 UBOOTCFG_FILE="${UBOOTCFG_DIR}/uEnv.txt"
 WIFI_REGDOMAIN="${WIFI_REGDOMAIN:-US}"
+WIFI_IFACE_2G="${WIFI_IFACE_2G:-wlan0}"
+WIFI_IFACE_5G="${WIFI_IFACE_5G:-wlan1}"
+WIFI_IFACE_6G="${WIFI_IFACE_6G:-wlan2}"
 
 DEBIAN_SOURCES=$(cat <<'SRC'
 deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware

@@ -12,10 +12,14 @@ APT_PKGS=(
   curl
   debian-archive-keyring
   debootstrap
+  dosfstools
+  e2fsprogs
   jq
   kpartx
+  parted
   p7zip-full
   qemu-user-static
+  rsync
   unzip
   xz-utils
 )

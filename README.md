@@ -30,8 +30,10 @@ sudo ./prepare-host.sh
 ```
 
 The helper installs `debootstrap`, `qemu-user-static`, `binfmt-support`, the
-Debian archive keyring, and supporting utilities. It also enables the aarch64
-binfmt entry and verifies that `qemu-aarch64-static` can execute on the host.
+Debian archive keyring, filesystem utilities (`dosfstools`, `e2fsprogs`),
+partitioning tools (`parted`, `kpartx`), file synchronization (`rsync`), and
+supporting utilities. It also enables the aarch64 binfmt entry and verifies
+that `qemu-aarch64-static` can execute on the host.
 The build still requires the system Python 3 runtime and standard library.
 
 ---

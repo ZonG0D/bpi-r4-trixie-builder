@@ -1,0 +1,15 @@
+[Unit]
+Description=hostapd per-interface %i
+Wants=network-online.target
+After=network-online.target
+BindsTo=sys-subsystem-net-devices-%i.device
+After=sys-subsystem-net-devices-%i.device
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/hostapd -i %i -P /run/hostapd-%i.pid /etc/hostapd/hostapd-%i.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

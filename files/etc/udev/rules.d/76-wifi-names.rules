@@ -1,0 +1,5 @@
+# Placeholder. Will be replaced on first boot by gen-wifi-udev-rules.sh if MACs are unknown.
+# Format:
+# SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="aa:bb:cc:dd:ee:ff", NAME="wlan0"
+# SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="aa:bb:cc:dd:ee:11", NAME="wlan1"
+# SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="aa:bb:cc:dd:ee:22", NAME="wlan2"

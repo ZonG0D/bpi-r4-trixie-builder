@@ -1,0 +1,11 @@
+[Unit]
+Description=Generate deterministic Wi-Fi udev names once
+ConditionPathExists=!/etc/udev/rules.d/.wifi-names.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gen-wifi-udev-rules.sh
+ExecStart=/bin/touch /etc/udev/rules.d/.wifi-names.done
+
+[Install]
+WantedBy=multi-user.target

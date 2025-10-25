@@ -8,7 +8,7 @@ test -s "$root/lib/firmware/regulatory.db"
 test -s "$root/lib/firmware/regulatory.db.p7s" || true
 
 # hostapd units present
-for i in wlp1s0 wlan1 wlan2; do
+for i in wlan0 wlan1 wlan2; do
   test -s "$root/etc/hostapd/hostapd-$i.conf"
 done
 test -s "$root/etc/systemd/system/hostapd@.service"

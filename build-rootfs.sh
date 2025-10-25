@@ -319,8 +319,8 @@ install -D -m0755 "${SCRIPT_DIR}/files/usr/local/sbin/gen-wifi-udev-rules.sh" \
 install -D -m0644 "${SCRIPT_DIR}/files/etc/systemd/system/firstboot-wifi-udev.service" \
   "${ROOTFS_DIR}/etc/systemd/system/firstboot-wifi-udev.service"
 
-install -D -m0644 "${SCRIPT_DIR}/files/etc/hostapd/hostapd-wlp1s0.conf" \
-  "${ROOTFS_DIR}/etc/hostapd/hostapd-wlp1s0.conf"
+install -D -m0644 "${SCRIPT_DIR}/files/etc/hostapd/hostapd-wlan0.conf" \
+  "${ROOTFS_DIR}/etc/hostapd/hostapd-wlan0.conf"
 install -D -m0644 "${SCRIPT_DIR}/files/etc/hostapd/hostapd-wlan1.conf" \
   "${ROOTFS_DIR}/etc/hostapd/hostapd-wlan1.conf"
 install -D -m0644 "${SCRIPT_DIR}/files/etc/hostapd/hostapd-wlan2.conf" \
@@ -523,7 +523,7 @@ do
 done
 
 SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable firstboot-wifi-udev.service || true
-SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable hostapd@wlp1s0.service || true
+SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable hostapd@wlan0.service || true
 SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable hostapd@wlan1.service || true
 SYSTEMD_OFFLINE=1 "${SYSTEMCTL_CMD[@]}" enable hostapd@wlan2.service || true
 

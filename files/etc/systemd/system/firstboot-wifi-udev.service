@@ -1,7 +1,6 @@
 [Unit]
 Description=Generate deterministic Wi-Fi udev names once
 ConditionPathExists=!/etc/udev/rules.d/.wifi-names.done
-After=multi-user.target
 
 [Service]
 Type=oneshot

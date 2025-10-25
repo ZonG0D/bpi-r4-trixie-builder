@@ -52,19 +52,53 @@ chroot_qemu() {
   fi
 }
 
+detect_mount_capability() {
+  local probe_dir
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/mount-probe.XXXXXX")" || return 1
+
+  if mount -t tmpfs -o nosuid,nodev,size=1M tmpfs "${probe_dir}" >/dev/null 2>&1; then
+    umount "${probe_dir}" >/dev/null 2>&1 || umount -l "${probe_dir}" >/dev/null 2>&1
+    rmdir "${probe_dir}" 2>/dev/null || true
+    return 0
+  fi
+
+  rmdir "${probe_dir}" 2>/dev/null || true
+  return 1
+}
+
 detect_chroot_backend() {
   USE_PROOT=0
+
+  local mount_capable=0
+  local chroot_capable=0
+
+  if detect_mount_capability; then
+    mount_capable=1
+  fi
+
   if chroot "${ROOTFS_DIR}" "${QEMU_BIN}" /bin/sh -c 'sh -c exit 0' >/dev/null 2>&1; then
+    chroot_capable=1
+  fi
+
+  if [ "${mount_capable}" -eq 1 ] && [ "${chroot_capable}" -eq 1 ]; then
     return 0
   fi
 
   if command -v proot >/dev/null 2>&1; then
     USE_PROOT=1
-    echo "[INFO] Falling back to proot for chroot operations" >&2
+    if [ "${mount_capable}" -eq 0 ]; then
+      echo "[INFO] Falling back to proot; privileged mounts unavailable" >&2
+    else
+      echo "[INFO] Falling back to proot for chroot operations" >&2
+    fi
     return 0
   fi
 
-  echo "[ERROR] Unable to execute nested ${ARCH} binaries; install proot or enable binfmt_misc" >&2
+  if [ "${mount_capable}" -eq 0 ]; then
+    echo "[ERROR] Unable to mount required filesystems; install proot or run with mount privileges" >&2
+  else
+    echo "[ERROR] Unable to execute nested ${ARCH} binaries; install proot or enable binfmt_misc" >&2
+  fi
   exit 1
 }
 

@@ -7,13 +7,31 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 require_root
 check_bins losetup parted partprobe mkfs.vfat mkfs.ext4 tar gzip sha256sum curl
 
-UBOOT_BASE="${OUT_DIR}/bpi-r4_sdmmc.img.gz"
+UBOOT_IMAGE_NAME="${UBOOT_IMAGE_NAME:-bpi-r4_sdmmc.img.gz}"
+UBOOT_BASE="${OUT_UBOOT_DIR}/${UBOOT_IMAGE_NAME}"
 ROOTFS_TAR="${OUT_DIR}/${DISTRO}_${ARCH}.tar.gz"
-KERNEL_TAR=$(ls "${OUT_DIR}"/bpi-r4_*main*.tar.gz 2>/dev/null | sort | tail -n1 || true)
+KERNEL_TAR_NAME="${KERNEL_TAR_NAME:-}"
+KERNEL_TAR=""
+
+[ -f "${ROOTFS_TAR}" ] || fail "Missing rootfs tarball at ${ROOTFS_TAR}"
+
+if [ -n "${KERNEL_TAR_NAME}" ] && [ -f "${OUT_KERNEL_DIR}/${KERNEL_TAR_NAME}" ]; then
+  KERNEL_TAR="${OUT_KERNEL_DIR}/${KERNEL_TAR_NAME}"
+else
+  KERNEL_TAR=$(ls "${OUT_KERNEL_DIR}"/*.tar.gz 2>/dev/null | sort | tail -n1 || true)
+fi
+
+if [ -z "${KERNEL_TAR}" ]; then
+  KERNEL_TAR=$(ls "${OUT_DIR}"/bpi-r4_*main*.tar.gz 2>/dev/null | sort | tail -n1 || true)
+fi
+
+if [ ! -f "${UBOOT_BASE}" ]; then
+  UBOOT_BASE="${OUT_DIR}/bpi-r4_sdmmc.img.gz"
+fi
 
 [ -f "${UBOOT_BASE}" ] || fail "Missing U-Boot image at ${UBOOT_BASE}"
 [ -f "${ROOTFS_TAR}" ] || fail "Missing rootfs tarball at ${ROOTFS_TAR}"
-[ -n "${KERNEL_TAR}" ] || fail "Missing kernel bundle in ${OUT_DIR}"
+[ -n "${KERNEL_TAR}" ] || fail "Missing kernel bundle in ${OUT_KERNEL_DIR} or ${OUT_DIR}"
 
 FINAL_BASE="${OUT_DIR}/bpi-r4_trixie_${KERNEL}_sdmmc.img"
 cp "${UBOOT_BASE}" "${FINAL_BASE}.gz"

@@ -11,6 +11,9 @@ import urllib.request
 
 OUT_DIR = Path.cwd() / "out"
 FIRMWARE_DIR = Path.cwd() / "firmware"
+OUT_UBOOT_DIR = OUT_DIR / "u-boot"
+OUT_KERNEL_DIR = OUT_DIR / "kernel"
+FETCH_BOOTCHAIN_ASSETS = os.environ.get("FETCH_BOOTCHAIN_ASSETS", "").lower() in ("1", "true", "yes")
 GITHUB_HEADERS = {
     "Accept": "application/vnd.github+json",
     "User-Agent": "bpi-r4-trixie-builder"
@@ -144,12 +147,17 @@ def create_firmware_symlinks():
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
+    OUT_UBOOT_DIR.mkdir(parents=True, exist_ok=True)
+    OUT_KERNEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    uboot_url, uboot_name = find_uboot_asset()
-    download(uboot_url, OUT_DIR / uboot_name)
+    if FETCH_BOOTCHAIN_ASSETS:
+        uboot_url, uboot_name = find_uboot_asset()
+        download(uboot_url, OUT_UBOOT_DIR / uboot_name)
 
-    kernel_url, kernel_name = find_kernel_asset()
-    download(kernel_url, OUT_DIR / kernel_name)
+        kernel_url, kernel_name = find_kernel_asset()
+        download(kernel_url, OUT_KERNEL_DIR / kernel_name)
+    else:
+        print("[INFO] Skipping bootchain downloads; set FETCH_BOOTCHAIN_ASSETS=1 to enable")
 
     download_firmware()
     create_firmware_symlinks()

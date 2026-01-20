@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-.PHONY: all fetch rootfs image clean
+.PHONY: all fetch rootfs bootchain kernel image clean
 
 all: image
 
@@ -11,7 +11,13 @@ fetch:
 rootfs:
 	./build-rootfs.sh
 
-image: fetch rootfs
+bootchain:
+	./build-bootchain.sh
+
+kernel:
+	./build-kernel.sh
+
+image: bootchain kernel rootfs
 	./build-image.sh
 
 clean:
